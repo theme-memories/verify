@@ -14,19 +14,12 @@ const app = new Hono<{ Bindings: Env }>();
 app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
   // --- Start Sanity Check & Debug Block ---
   // On Vercel, environment variables are in process.env, not c.env
-  console.log("--- Vercel Environment Debug (using process.env) ---");
-  console.log(`HMAC_VERIFY type: ${typeof process.env.HMAC_VERIFY}`);
-  console.log(`HMAC_VERIFY empty: ${!process.env.HMAC_VERIFY}`);
-  console.log(`HMAC_SIGNING type: ${typeof process.env.HMAC_SIGNING}`);
-  console.log(`HMAC_SIGNING empty: ${!process.env.HMAC_SIGNING}`);
-
   if (!process.env.HMAC_VERIFY || !process.env.HMAC_SIGNING) {
     const errorMessage =
       "FATAL: Server environment variables 'HMAC_VERIFY' or 'HMAC_SIGNING' are not set. Check Vercel environment variable settings and redeploy.";
     console.error(errorMessage);
     return c.text(errorMessage, 500);
   }
-  console.log("--- Debug End: Environment variables seem to be present. ---");
   // --- End Sanity Check & Debug Block ---
 
   // --- HMAC Verification ---
@@ -89,19 +82,22 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
     const db = client.db("theme-memories");
     const collection = db.collection("hash");
 
+    console.log(`[DB] Attempting to find document with slug: '${slug}'`);
     const doc = await collection.findOne({ slug });
 
     if (!doc) {
+      console.log("[DB] Document not found.");
       return c.json({ success: false, errcode: "NOT_FOUND" });
     }
 
+    console.log("[DB] Document found. Verifying password...");
     const isVerified = await argon2.verify(doc.hashed, userinput);
 
     if (isVerified) {
+      console.log("[Auth] Password verification successful.");
       const responsePayload = { success: true };
       const responseBody = JSON.stringify(responsePayload);
 
-      // Use process.env here
       const signingKey = await crypto.subtle.importKey(
         "raw",
         encoder.encode(process.env.HMAC_SIGNING),
@@ -119,9 +115,11 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
+      console.log("[Response] Successfully signed and sending response.");
       c.header("X-Amia-ResSig", responseSignatureHex);
       return c.json(responsePayload);
     } else {
+      console.log("[Auth] Password verification failed.");
       return c.json({ success: false, errcode: "INVALID_INPUT" });
     }
   } catch (err) {
