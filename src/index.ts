@@ -11,6 +11,23 @@ type Env = {
 const app = new Hono<{ Bindings: Env }>();
 
 app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
+  // --- Start Sanity Check & Debug Block ---
+  console.log("--- Vercel Environment Debug ---");
+  console.log(`HMAC_VERIFY type: ${typeof c.env.HMAC_VERIFY}`);
+  console.log(`HMAC_VERIFY empty: ${!c.env.HMAC_VERIFY}`);
+  console.log(`HMAC_SIGNING type: ${typeof c.env.HMAC_SIGNING}`);
+  console.log(`HMAC_SIGNING empty: ${!c.env.HMAC_SIGNING}`);
+
+  if (!c.env.HMAC_VERIFY || !c.env.HMAC_SIGNING) {
+    const errorMessage =
+      "FATAL: Server environment variables 'HMAC_VERIFY' or 'HMAC_SIGNING' are not set. Check Vercel environment variable settings and redeploy.";
+    console.error(errorMessage);
+    // Note: We are returning a 500 server error because this is a server configuration issue.
+    return c.text(errorMessage, 500);
+  }
+  console.log("--- Debug End: Environment variables seem to be present. ---");
+  // --- End Sanity Check & Debug Block ---
+
   // --- HMAC Verification ---
   const signatureHeader = c.req.header("X-Amia-ReqSig");
   if (!signatureHeader) {
@@ -65,8 +82,8 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
 
   try {
     await client.connect();
-    const db = client.db("theme-memories"); // Replace with your database name
-    const collection = db.collection("hash"); // Replace with your collection name
+    const db = client.db("mydatabase"); // Replace with your database name
+    const collection = db.collection("slugs"); // Replace with your collection name
 
     const doc = await collection.findOne({ slug });
 
