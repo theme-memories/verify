@@ -1,0 +1,9 @@
+# Ignore artifacts:
+build
+coverage
+
+# custom
+.idx/airules.md
+LICENSE
+pnpm-lock.yaml
+pnpm-workspace.yaml
