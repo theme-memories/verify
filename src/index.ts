@@ -2,6 +2,7 @@ import { Hono, Context } from "hono";
 import { MongoClient } from "mongodb";
 import argon2 from "argon2";
 
+// This type is now for documentation purposes on Vercel, as we use process.env
 type Env = {
   MONGO_URI: string;
   HMAC_VERIFY: string;
@@ -12,17 +13,17 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
   // --- Start Sanity Check & Debug Block ---
-  console.log("--- Vercel Environment Debug ---");
-  console.log(`HMAC_VERIFY type: ${typeof c.env.HMAC_VERIFY}`);
-  console.log(`HMAC_VERIFY empty: ${!c.env.HMAC_VERIFY}`);
-  console.log(`HMAC_SIGNING type: ${typeof c.env.HMAC_SIGNING}`);
-  console.log(`HMAC_SIGNING empty: ${!c.env.HMAC_SIGNING}`);
+  // On Vercel, environment variables are in process.env, not c.env
+  console.log("--- Vercel Environment Debug (using process.env) ---");
+  console.log(`HMAC_VERIFY type: ${typeof process.env.HMAC_VERIFY}`);
+  console.log(`HMAC_VERIFY empty: ${!process.env.HMAC_VERIFY}`);
+  console.log(`HMAC_SIGNING type: ${typeof process.env.HMAC_SIGNING}`);
+  console.log(`HMAC_SIGNING empty: ${!process.env.HMAC_SIGNING}`);
 
-  if (!c.env.HMAC_VERIFY || !c.env.HMAC_SIGNING) {
+  if (!process.env.HMAC_VERIFY || !process.env.HMAC_SIGNING) {
     const errorMessage =
       "FATAL: Server environment variables 'HMAC_VERIFY' or 'HMAC_SIGNING' are not set. Check Vercel environment variable settings and redeploy.";
     console.error(errorMessage);
-    // Note: We are returning a 500 server error because this is a server configuration issue.
     return c.text(errorMessage, 500);
   }
   console.log("--- Debug End: Environment variables seem to be present. ---");
@@ -37,9 +38,10 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
   const body = await c.req.text();
 
   const encoder = new TextEncoder();
+  // Use process.env here
   const verifyKey = await crypto.subtle.importKey(
     "raw",
-    encoder.encode(c.env.HMAC_VERIFY),
+    encoder.encode(process.env.HMAC_VERIFY),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -61,13 +63,11 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
   const { slug, userinput } = JSON.parse(body);
 
   // --- Input Validation ---
-  // Slug validation: must contain only a-z, A-Z, 0-9, _, -
   const slugRegex = /^[a-zA-Z0-9_-]+$/;
   if (!slug || typeof slug !== "string" || !slugRegex.test(slug)) {
     return c.json({ success: false, errcode: "INVALID_SLUG_FORMAT" }, 400);
   }
 
-  // Password validation: must contain only a-z, A-Z, 0-9, and !@#$%^&*
   const passwordRegex = /^[a-zA-Z0-9!@#$%^&*]+$/;
   if (
     !userinput ||
@@ -78,12 +78,16 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
   }
   // --- End Input Validation ---
 
-  const client = new MongoClient(c.env.MONGO_URI);
+  if (!process.env.MONGO_URI) {
+    console.error("FATAL: MONGO_URI is not set in environment variables.");
+    return c.text("Database connection string is not configured.", 500);
+  }
+  const client = new MongoClient(process.env.MONGO_URI); // Use process.env here
 
   try {
     await client.connect();
-    const db = client.db("mydatabase"); // Replace with your database name
-    const collection = db.collection("slugs"); // Replace with your collection name
+    const db = client.db("theme-memories");
+    const collection = db.collection("hash");
 
     const doc = await collection.findOne({ slug });
 
@@ -97,9 +101,10 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
       const responsePayload = { success: true };
       const responseBody = JSON.stringify(responsePayload);
 
+      // Use process.env here
       const signingKey = await crypto.subtle.importKey(
         "raw",
-        encoder.encode(c.env.HMAC_SIGNING),
+        encoder.encode(process.env.HMAC_SIGNING),
         { name: "HMAC", hash: "SHA-256" },
         false,
         ["sign"],
