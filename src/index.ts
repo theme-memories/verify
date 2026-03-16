@@ -1,32 +1,72 @@
-import { Hono } from "hono";
+import { Hono, Context } from "hono";
 import { MongoClient } from "mongodb";
 import argon2 from "argon2";
 
-const app = new Hono();
+type Env = {
+  MONGO_URI: string;
+  HMAC_VERIFY: string;
+  HMAC_SIGNING: string;
+};
 
-const welcomeStrings = [
-  "Hello Hono!",
-  "To learn more about Hono on Vercel, visit https://vercel.com/docs/frameworks/backend/hono",
-];
+const app = new Hono<{ Bindings: Env }>();
 
-app.get("/", (c) => {
-  return c.text(welcomeStrings.join("\n\n"));
-});
-
-app.post("/verify", async (c) => {
-  const { slug, userinput } = await c.req.json();
-
-  if (!slug || !userinput) {
-    return c.json({ success: false, errcode: "MISSING_PARAMS" });
+app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
+  // --- HMAC Verification ---
+  const signatureHeader = c.req.header("X-Amia-ReqSig");
+  if (!signatureHeader) {
+    return c.text("Missing signature", 401);
   }
 
-  // IMPORTANT: Replace with your MongoDB connection string
-  const client = new MongoClient("mongodb://localhost:27017");
+  const body = await c.req.text();
+
+  const encoder = new TextEncoder();
+  const verifyKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(c.env.HMAC_VERIFY),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    verifyKey,
+    encoder.encode(body),
+  );
+  const computedSignature = Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  if (computedSignature !== signatureHeader) {
+    return c.text("Invalid signature", 401);
+  }
+  // --- End HMAC Verification ---
+
+  const { slug, userinput } = JSON.parse(body);
+
+  // --- Input Validation ---
+  // Slug validation: must contain only a-z, A-Z, 0-9, _, -
+  const slugRegex = /^[a-zA-Z0-9_-]+$/;
+  if (!slug || typeof slug !== "string" || !slugRegex.test(slug)) {
+    return c.json({ success: false, errcode: "INVALID_SLUG_FORMAT" }, 400);
+  }
+
+  // Password validation: must contain only a-z, A-Z, 0-9, and !@#$%^&*
+  const passwordRegex = /^[a-zA-Z0-9!@#$%^&*]+$/;
+  if (
+    !userinput ||
+    typeof userinput !== "string" ||
+    !passwordRegex.test(userinput)
+  ) {
+    return c.json({ success: false, errcode: "INVALID_PASSWORD_FORMAT" }, 400);
+  }
+  // --- End Input Validation ---
+
+  const client = new MongoClient(c.env.MONGO_URI);
 
   try {
     await client.connect();
-    const db = client.db("mydatabase"); // Replace with your database name
-    const collection = db.collection("slugs"); // Replace with your collection name
+    const db = client.db("theme-memories"); // Replace with your database name
+    const collection = db.collection("hash"); // Replace with your collection name
 
     const doc = await collection.findOne({ slug });
 
@@ -37,7 +77,28 @@ app.post("/verify", async (c) => {
     const isVerified = await argon2.verify(doc.hashed, userinput);
 
     if (isVerified) {
-      return c.json({ success: true });
+      const responsePayload = { success: true };
+      const responseBody = JSON.stringify(responsePayload);
+
+      const signingKey = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(c.env.HMAC_SIGNING),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+      );
+
+      const responseSignature = await crypto.subtle.sign(
+        "HMAC",
+        signingKey,
+        encoder.encode(responseBody),
+      );
+      const responseSignatureHex = Array.from(new Uint8Array(responseSignature))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      c.header("X-Amia-ResSig", responseSignatureHex);
+      return c.json(responsePayload);
     } else {
       return c.json({ success: false, errcode: "INVALID_INPUT" });
     }
