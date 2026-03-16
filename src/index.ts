@@ -12,26 +12,12 @@ type Env = {
 const app = new Hono<{ Bindings: Env }>();
 
 app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
-  // --- Start Sanity Check & Debug Block ---
-  // On Vercel, environment variables are in process.env, not c.env
-  if (!process.env.HMAC_VERIFY || !process.env.HMAC_SIGNING) {
-    const errorMessage =
-      "FATAL: Server environment variables 'HMAC_VERIFY' or 'HMAC_SIGNING' are not set. Check Vercel environment variable settings and redeploy.";
-    console.error(errorMessage);
-    return c.text(errorMessage, 500);
-  }
-  // --- End Sanity Check & Debug Block ---
-
   // --- HMAC Verification ---
   const signatureHeader = c.req.header("X-Amia-ReqSig");
-  if (!signatureHeader) {
-    return c.text("Missing signature", 401);
-  }
 
   const body = await c.req.text();
 
   const encoder = new TextEncoder();
-  // Use process.env here
   const verifyKey = await crypto.subtle.importKey(
     "raw",
     encoder.encode(process.env.HMAC_VERIFY),
@@ -75,26 +61,22 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
     console.error("FATAL: MONGO_URI is not set in environment variables.");
     return c.text("Database connection string is not configured.", 500);
   }
-  const client = new MongoClient(process.env.MONGO_URI); // Use process.env here
+  const client = new MongoClient(process.env.MONGO_URI);
 
   try {
     await client.connect();
     const db = client.db("theme-memories");
     const collection = db.collection("hash");
 
-    console.log(`[DB] Attempting to find document with slug: '${slug}'`);
     const doc = await collection.findOne({ slug });
 
     if (!doc) {
-      console.log("[DB] Document not found.");
       return c.json({ success: false, errcode: "NOT_FOUND" });
     }
 
-    console.log("[DB] Document found. Verifying password...");
     const isVerified = await argon2.verify(doc.hashed, userinput);
 
     if (isVerified) {
-      console.log("[Auth] Password verification successful.");
       const responsePayload = { success: true };
       const responseBody = JSON.stringify(responsePayload);
 
@@ -115,11 +97,9 @@ app.post("/subsiding6634", async (c: Context<{ Bindings: Env }>) => {
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
-      console.log("[Response] Successfully signed and sending response.");
       c.header("X-Amia-ResSig", responseSignatureHex);
       return c.json(responsePayload);
     } else {
-      console.log("[Auth] Password verification failed.");
       return c.json({ success: false, errcode: "INVALID_INPUT" });
     }
   } catch (err) {
