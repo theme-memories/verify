@@ -1,0 +1,8 @@
+# Ignore artifacts:
+build
+coverage
+
+# Custom
+LICENSE
+pnpm-lock.yaml
+pnpm-workspace.yaml
