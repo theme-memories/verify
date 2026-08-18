@@ -11,6 +11,7 @@ import argon2 from "argon2";
 export const ARGON2_PHC_PREFIX = "$argon2id$";
 export const MAX_INPUT_LENGTH = 1024;
 export const MAX_TARGET_LENGTH = 512;
+const SECRET_MIN_LENGTH = 32;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -20,9 +21,47 @@ function requireEnv(name: string): string {
   return value;
 }
 
-export const JWT_ISSUER = requireEnv("JWT_ISSUER");
-export const JWT_AUDIENCE = requireEnv("JWT_AUDIENCE");
-export const VERIFY_PATH = requireEnv("VERIFY_PATH");
+function requireStrongEnv(name: string): string {
+  const value = requireEnv(name);
+  if (value.length < SECRET_MIN_LENGTH) {
+    throw new Error(
+      `${name} must be at least ${SECRET_MIN_LENGTH} characters (got ${value.length})`,
+    );
+  }
+  return value;
+}
+
+function requireHttpsUrl(name: string): string {
+  const value = requireEnv(name);
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") {
+      throw new Error();
+    }
+  } catch {
+    throw new Error(`${name} must be a valid HTTPS URL (got "${value}")`);
+  }
+  return value;
+}
+
+export const JWT_ISSUER = requireHttpsUrl("JWT_ISSUER");
+export const JWT_AUDIENCE = requireHttpsUrl("JWT_AUDIENCE");
+
+const rawVerifyPath = requireEnv("VERIFY_PATH");
+if (
+  !rawVerifyPath.startsWith("/") ||
+  rawVerifyPath.includes("?") ||
+  rawVerifyPath.includes("#") ||
+  rawVerifyPath === "/"
+) {
+  throw new Error(
+    `VERIFY_PATH must be a strict path starting with "/" with no query/fragment (got "${rawVerifyPath}")`,
+  );
+}
+export const VERIFY_PATH = rawVerifyPath;
+
+export const JWT_SECRET = requireStrongEnv("JWT_SECRET");
+const JWT_MAX_LIFETIME = 120;
 
 function invalidInput(c: Context) {
   return c.json({ success: false, errcode: "INVALID_INPUT" }, 400);
@@ -37,22 +76,54 @@ const app = new Hono();
 app.use("*", secureHeaders());
 
 const requireJwt: MiddlewareHandler = async (c, next) => {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error("JWT_SECRET is not set");
-  }
-
   await jwt({
-    secret,
+    secret: JWT_SECRET,
     alg: "HS256",
     verification: { iss: JWT_ISSUER, aud: JWT_AUDIENCE },
   })(c, next);
 };
 
+class Semaphore {
+  private queue: Array<() => void> = [];
+  private permits: number;
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+  release(): void {
+    const next = this.queue.shift();
+    if (next) {
+      next();
+    } else {
+      this.permits++;
+    }
+  }
+}
+
+const argon2Limiter = new Semaphore(2);
+
 const requireExpClaim: MiddlewareHandler = async (c, next) => {
-  const payload = c.get("jwtPayload") as { exp?: number } | undefined;
+  const payload = c.get("jwtPayload") as
+    { exp?: number; iat?: number } | undefined;
   if (payload?.exp === undefined) {
     throw new HTTPException(401, { message: "exp claim is required" });
+  }
+
+  if (
+    payload.iat !== undefined &&
+    payload.exp - payload.iat > JWT_MAX_LIFETIME
+  ) {
+    throw new HTTPException(401, {
+      message: `token lifetime exceeds maximum of ${JWT_MAX_LIFETIME}s`,
+    });
   }
 
   await next();
@@ -116,12 +187,15 @@ app.post(
     }
 
     let success: boolean;
+    await argon2Limiter.acquire();
     try {
       success = await argon2.verify(target, input, {
         secret: Buffer.from(secret, "utf8"),
       });
     } catch {
       return verifyFailed(c);
+    } finally {
+      argon2Limiter.release();
     }
 
     return c.json({
@@ -173,7 +247,13 @@ app.onError((err, c) => {
     return c.json({ success: false, errcode }, err.status, headers);
   }
 
-  console.error(err);
+  console.error(
+    JSON.stringify({
+      event: "request_error",
+      name: err.name,
+      status: err instanceof HTTPException ? err.status : 500,
+    }),
+  );
   return c.json({ success: false, errcode: "INTERNAL_ERROR" }, 500);
 });
 

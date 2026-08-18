@@ -1,6 +1,6 @@
 {
   "name": "verify",
-  "version": "26.8.17",
+  "version": "26.8.19",
   "description": "Argon2 verification module",
   "scripts": {
     "test": "vitest run",

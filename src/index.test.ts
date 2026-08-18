@@ -3,8 +3,8 @@ import argon2 from "argon2";
 import { sign } from "hono/jwt";
 import app, { ARGON2_PHC_PREFIX, JWT_AUDIENCE, JWT_ISSUER } from "./index.js";
 
-const TEST_PEPPER = "test-pepper-secret-123456789";
-const TEST_JWT_SECRET = "test-jwt-secret-123456789";
+const TEST_PEPPER = "test-pepper-secret-1234567890123456";
+const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
 
 const SUCCESS_BODY = { success: true, errcode: null };
 const INVALID_INPUT_BODY = { success: false, errcode: "INVALID_INPUT" };
@@ -385,20 +385,6 @@ describe("POST /test-path", () => {
     await expectVerify("correct-password", hash, 401, undefined, token);
   });
 
-  it("returns 500 when JWT_SECRET is not configured", async () => {
-    const hash = await createHash("correct-password");
-    const token = await createToken();
-    delete process.env.JWT_SECRET;
-
-    await expectVerify(
-      "correct-password",
-      hash,
-      500,
-      INTERNAL_ERROR_BODY,
-      token,
-    );
-  });
-
   it("sets Cache-Control: no-store on the verify endpoint", async () => {
     const hash = await createHash("correct-password");
 
@@ -444,5 +430,42 @@ describe("POST /test-path", () => {
       success: false,
       errcode: "METHOD_NOT_ALLOWED",
     });
+  });
+
+  it("returns 401 when token lifetime exceeds JWT_MAX_LIFETIME", async () => {
+    const hash = await createHash("correct-password");
+    const now = Math.floor(Date.now() / 1000);
+    const token = await createToken({ iat: now, exp: now + 200 });
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("accepts a token with valid exp but no iat (lifetime check skipped)", async () => {
+    const hash = await createHash("correct-password");
+    const token = await sign(
+      {
+        sub: "test-worker",
+        exp: Math.floor(Date.now() / 1000) + 60,
+        iss: JWT_ISSUER,
+        aud: JWT_AUDIENCE,
+      },
+      process.env.JWT_SECRET!,
+      "HS256",
+    );
+
+    await expectVerify("correct-password", hash, 200, SUCCESS_BODY, token);
+  });
+
+  it("sanitizes error responses - does not leak tokens in body", async () => {
+    const hash = await createHash("correct-password");
+    const response = await postVerify("correct-password", hash, "not-a-jwt");
+
+    const body = await response.json();
+    const bodyStr = JSON.stringify(body);
+    expect(bodyStr).not.toContain("not-a-jwt");
+    expect(bodyStr).not.toContain("Authorization");
+    expect(bodyStr).not.toContain("Bearer");
+    expect(bodyStr).not.toContain("JWT_SECRET");
+    expect(response.status).toBe(401);
   });
 });
