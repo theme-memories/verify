@@ -1,7 +1,12 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import argon2 from "argon2";
 import { sign } from "hono/jwt";
-import app, { ARGON2_PHC_PREFIX, JWT_AUDIENCE, JWT_ISSUER } from "./index.js";
+import app, {
+  ARGON2_PHC_PREFIX,
+  JWT_AUDIENCE,
+  JWT_ISSUER,
+  Semaphore,
+} from "./index.js";
 
 const TEST_PEPPER = "test-pepper-secret-1234567890123456";
 const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
@@ -9,7 +14,6 @@ const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
 const SUCCESS_BODY = { success: true, errcode: null };
 const INVALID_INPUT_BODY = { success: false, errcode: "INVALID_INPUT" };
 const VERIFY_FAILED_BODY = { success: false, errcode: "VERIFY_FAILED" };
-const INTERNAL_ERROR_BODY = { success: false, errcode: "INTERNAL_ERROR" };
 
 describe("POST /test-path", () => {
   beforeEach(() => {
@@ -101,10 +105,7 @@ describe("POST /test-path", () => {
   });
 
   it("returns success=false when the server uses the wrong pepper", async () => {
-    const hash = await createHash("correct-password");
-
-    // Simulate the application having a different pepper.
-    process.env.ARGON2_SECRET = "wrong-pepper";
+    const hash = await createHash("correct-password", "wrong-pepper");
 
     await expectVerify("correct-password", hash, 200, VERIFY_FAILED_BODY);
   });
@@ -268,13 +269,6 @@ describe("POST /test-path", () => {
     });
   });
 
-  it("returns 500 when ARGON2_SECRET is not configured", async () => {
-    const hash = await createHash("correct-password");
-    delete process.env.ARGON2_SECRET;
-
-    await expectVerify("correct-password", hash, 500, INTERNAL_ERROR_BODY);
-  });
-
   it("returns 401 when the Authorization header is missing", async () => {
     const hash = await createHash("correct-password");
 
@@ -385,6 +379,39 @@ describe("POST /test-path", () => {
     await expectVerify("correct-password", hash, 401, undefined, token);
   });
 
+  it("returns 401 for a token issued in the future beyond clock skew", async () => {
+    const hash = await createHash("correct-password");
+    const now = Math.floor(Date.now() / 1000);
+    const token = await createToken({ iat: now + 60, exp: now + 120 });
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("returns 401 for a token with non-numeric iat", async () => {
+    const hash = await createHash("correct-password");
+    const token = await sign(
+      {
+        sub: "test-worker",
+        iat: "not-a-number" as unknown as number,
+        exp: Math.floor(Date.now() / 1000) + 60,
+        iss: JWT_ISSUER,
+        aud: JWT_AUDIENCE,
+      },
+      process.env.JWT_SECRET!,
+      "HS256",
+    );
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("returns 401 for a token with exp <= iat", async () => {
+    const hash = await createHash("correct-password");
+    const now = Math.floor(Date.now() / 1000);
+    const token = await createToken({ iat: now + 10, exp: now + 5 });
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
   it("sets Cache-Control: no-store on the verify endpoint", async () => {
     const hash = await createHash("correct-password");
 
@@ -440,7 +467,7 @@ describe("POST /test-path", () => {
     await expectVerify("correct-password", hash, 401, undefined, token);
   });
 
-  it("accepts a token with valid exp but no iat (lifetime check skipped)", async () => {
+  it("returns 401 for a token with valid exp but no iat", async () => {
     const hash = await createHash("correct-password");
     const token = await sign(
       {
@@ -453,7 +480,7 @@ describe("POST /test-path", () => {
       "HS256",
     );
 
-    await expectVerify("correct-password", hash, 200, SUCCESS_BODY, token);
+    await expectVerify("correct-password", hash, 401, undefined, token);
   });
 
   it("sanitizes error responses - does not leak tokens in body", async () => {
@@ -467,5 +494,40 @@ describe("POST /test-path", () => {
     expect(bodyStr).not.toContain("Bearer");
     expect(bodyStr).not.toContain("JWT_SECRET");
     expect(response.status).toBe(401);
+  });
+});
+
+describe("Semaphore", () => {
+  it("tryAcquire returns true when permits are available", () => {
+    const sem = new Semaphore(2, 10);
+    expect(sem.tryAcquire()).toBe(true);
+    expect(sem.tryAcquire()).toBe(true);
+  });
+
+  it("tryAcquire returns true when queue is below maxQueue", () => {
+    const sem = new Semaphore(0, 10);
+    sem.acquire();
+    sem.acquire();
+    expect(sem.tryAcquire()).toBe(true);
+  });
+
+  it("tryAcquire returns false when queue is full", () => {
+    const sem = new Semaphore(0, 2);
+    sem.acquire();
+    sem.acquire();
+    expect(sem.tryAcquire()).toBe(false);
+  });
+
+  it("release frees a waiting acquirer", async () => {
+    const sem = new Semaphore(1, 10);
+    sem.acquire();
+    let resolved = false;
+    const p = sem.acquire().then(() => {
+      resolved = true;
+    });
+    expect(resolved).toBe(false);
+    sem.release();
+    await p;
+    expect(resolved).toBe(true);
   });
 });

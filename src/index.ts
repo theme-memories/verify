@@ -61,7 +61,9 @@ if (
 export const VERIFY_PATH = rawVerifyPath;
 
 export const JWT_SECRET = requireStrongEnv("JWT_SECRET");
+export const ARGON2_SECRET = requireStrongEnv("ARGON2_SECRET");
 const JWT_MAX_LIFETIME = 120;
+const JWT_CLOCK_SKEW_TOLERANCE = 30;
 
 function invalidInput(c: Context) {
   return c.json({ success: false, errcode: "INVALID_INPUT" }, 400);
@@ -83,16 +85,35 @@ const requireJwt: MiddlewareHandler = async (c, next) => {
   })(c, next);
 };
 
-class Semaphore {
+export class Semaphore {
   private queue: Array<() => void> = [];
   private permits: number;
-  constructor(permits: number) {
+  private maxQueue: number;
+  constructor(permits: number, maxQueue = 50) {
     this.permits = permits;
+    this.maxQueue = maxQueue;
   }
-  async acquire(): Promise<void> {
+  get waiting(): number {
+    return this.queue.length;
+  }
+  tryAcquire(): boolean {
     if (this.permits > 0) {
       this.permits--;
-      return;
+      return true;
+    }
+    if (this.queue.length >= this.maxQueue) {
+      return false;
+    }
+    this.queue.push(() => {});
+    return true;
+  }
+  acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return Promise.resolve();
+    }
+    if (this.queue.length >= this.maxQueue) {
+      return Promise.reject(new Error("queue full"));
     }
     return new Promise<void>((resolve) => {
       this.queue.push(resolve);
@@ -113,14 +134,28 @@ const argon2Limiter = new Semaphore(2);
 const requireExpClaim: MiddlewareHandler = async (c, next) => {
   const payload = c.get("jwtPayload") as
     { exp?: number; iat?: number } | undefined;
-  if (payload?.exp === undefined) {
-    throw new HTTPException(401, { message: "exp claim is required" });
+
+  const now = Math.floor(Date.now() / 1000);
+
+  if (!Number.isSafeInteger(payload?.exp) || payload!.exp! <= now) {
+    throw new HTTPException(401, { message: "token has expired" });
   }
 
-  if (
-    payload.iat !== undefined &&
-    payload.exp - payload.iat > JWT_MAX_LIFETIME
-  ) {
+  if (!Number.isSafeInteger(payload?.iat)) {
+    throw new HTTPException(401, { message: "iat claim is required" });
+  }
+
+  const iat = payload!.iat!;
+
+  if (iat > now + JWT_CLOCK_SKEW_TOLERANCE) {
+    throw new HTTPException(401, { message: "token issued in the future" });
+  }
+
+  if (payload!.exp! <= iat) {
+    throw new HTTPException(401, { message: "token exp must be after iat" });
+  }
+
+  if (payload!.exp! - iat > JWT_MAX_LIFETIME) {
     throw new HTTPException(401, {
       message: `token lifetime exceeds maximum of ${JWT_MAX_LIFETIME}s`,
     });
@@ -170,11 +205,6 @@ app.post(
   async (c) => {
     const { input, target } = c.req.valid("json");
 
-    const secret = process.env.ARGON2_SECRET;
-    if (!secret) {
-      throw new Error("ARGON2_SECRET is not set");
-    }
-
     let needsRehash: boolean;
     try {
       needsRehash = argon2.needsRehash(target);
@@ -187,10 +217,12 @@ app.post(
     }
 
     let success: boolean;
-    await argon2Limiter.acquire();
+    if (!argon2Limiter.tryAcquire()) {
+      return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429);
+    }
     try {
       success = await argon2.verify(target, input, {
-        secret: Buffer.from(secret, "utf8"),
+        secret: Buffer.from(ARGON2_SECRET, "utf8"),
       });
     } catch {
       return verifyFailed(c);
