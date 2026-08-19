@@ -286,7 +286,7 @@ app.post(
 
     const signal = c.req.raw.signal;
     if (signal.aborted) {
-      return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 499);
+      return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 408);
     }
 
     let success: boolean;
@@ -313,7 +313,7 @@ app.post(
       }
 
       if (result === "aborted") {
-        return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 499);
+        return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 408);
       }
 
       success = result;
@@ -364,6 +364,7 @@ app.onError((err, c) => {
           401: "UNAUTHORIZED",
           403: "FORBIDDEN",
           404: "NOT_FOUND",
+          408: "REQUEST_CANCELLED",
           413: "PAYLOAD_TOO_LARGE",
           429: "TOO_MANY_REQUESTS",
           504: "TIMEOUT",
