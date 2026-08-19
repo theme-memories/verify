@@ -10,8 +10,11 @@ import argon2 from "argon2";
 
 export const ARGON2_PHC_PREFIX = "$argon2id$";
 export const MAX_INPUT_LENGTH = 1024;
-export const MAX_TARGET_LENGTH = 512;
+export const MAX_TARGET_LENGTH = 128;
+const MAX_BODY_BYTES = 32 * 1024;
+const MAX_AUTHORIZATION_LENGTH = 4096;
 const SECRET_MIN_LENGTH = 32;
+const VERIFY_PATH_PATTERN = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -23,7 +26,7 @@ function requireEnv(name: string): string {
 
 function requireStrongEnv(name: string): string {
   const value = requireEnv(name);
-  if (value.length < SECRET_MIN_LENGTH) {
+  if (Buffer.byteLength(value, "utf8") < SECRET_MIN_LENGTH) {
     throw new Error(
       `${name} must be at least ${SECRET_MIN_LENGTH} characters (got ${value.length})`,
     );
@@ -48,20 +51,15 @@ export const JWT_ISSUER = requireHttpsUrl("JWT_ISSUER");
 export const JWT_AUDIENCE = requireHttpsUrl("JWT_AUDIENCE");
 
 const rawVerifyPath = requireEnv("VERIFY_PATH");
-if (
-  !rawVerifyPath.startsWith("/") ||
-  rawVerifyPath.includes("?") ||
-  rawVerifyPath.includes("#") ||
-  rawVerifyPath === "/"
-) {
+if (!VERIFY_PATH_PATTERN.test(rawVerifyPath) || rawVerifyPath.length > 256) {
   throw new Error(
-    `VERIFY_PATH must be a strict path starting with "/" with no query/fragment (got "${rawVerifyPath}")`,
+    `VERIFY_PATH must be a literal path containing only letters, numbers, "_", "-", and "/" (got "${rawVerifyPath}")`,
   );
 }
 export const VERIFY_PATH = rawVerifyPath;
 
-export const JWT_SECRET = requireStrongEnv("JWT_SECRET");
-export const ARGON2_SECRET = requireStrongEnv("ARGON2_SECRET");
+const JWT_SECRET = requireStrongEnv("JWT_SECRET");
+const ARGON2_SECRET = requireStrongEnv("ARGON2_SECRET");
 const JWT_MAX_LIFETIME = 120;
 const JWT_CLOCK_SKEW_TOLERANCE = 30;
 
@@ -78,10 +76,25 @@ const app = new Hono();
 app.use("*", secureHeaders());
 
 const requireJwt: MiddlewareHandler = async (c, next) => {
+  const authorization = c.req.header("Authorization");
+  if (authorization && authorization.length > MAX_AUTHORIZATION_LENGTH) {
+    throw new HTTPException(401, {
+      message: "authorization header is too long",
+      res: new Response(null, {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Bearer realm="verify", error="invalid_request"',
+        },
+      }),
+    });
+  }
+
   await jwt({
     secret: JWT_SECRET,
     alg: "HS256",
-    verification: { iss: JWT_ISSUER, aud: JWT_AUDIENCE },
+    // Hono's default iat check rejects any future timestamp. The custom check
+    // below intentionally allows a small clock-skew window.
+    verification: { iss: JWT_ISSUER, aud: JWT_AUDIENCE, iat: false },
   })(c, next);
 };
 
@@ -101,11 +114,7 @@ export class Semaphore {
       this.permits--;
       return true;
     }
-    if (this.queue.length >= this.maxQueue) {
-      return false;
-    }
-    this.queue.push(() => {});
-    return true;
+    return false;
   }
   acquire(): Promise<void> {
     if (this.permits > 0) {
@@ -164,16 +173,74 @@ const requireExpClaim: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+const requireSubject: MiddlewareHandler = async (c, next) => {
+  const payload = c.get("jwtPayload") as { sub?: unknown } | undefined;
+  if (
+    typeof payload?.sub !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(payload.sub)
+  ) {
+    throw new HTTPException(403, { message: "token subject is invalid" });
+  }
+  await next();
+};
+
+const requireJsonContentType: MiddlewareHandler = async (c, next) => {
+  const contentType = (c.req.header("Content-Type") ?? "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (contentType !== "application/json") return invalidInput(c);
+  await next();
+};
+
+const validateContentLength: MiddlewareHandler = async (c, next) => {
+  const rawLength = c.req.header("Content-Length");
+  if (rawLength !== undefined) {
+    if (!/^(0|[1-9]\d*)$/.test(rawLength)) return invalidInput(c);
+    const length = Number(rawLength);
+    if (!Number.isSafeInteger(length) || length > MAX_BODY_BYTES) {
+      return c.json({ success: false, errcode: "PAYLOAD_TOO_LARGE" }, 413);
+    }
+  }
+  await next();
+};
+
+function isCanonicalBase64(value: string): boolean {
+  if (!/^[A-Za-z0-9+/]+$/.test(value)) return false;
+  const decoded = Buffer.from(value, "base64");
+  return decoded.toString("base64").replace(/=+$/, "") === value;
+}
+
+function isValidArgon2Phc(target: string): boolean {
+  const parts = target.split("$");
+  if (parts.length !== 6) return false;
+
+  const [, algorithm, version, rawParams, salt, digest] = parts;
+  if (algorithm !== "argon2id" || !/^v=\d+$/.test(version)) return false;
+  if (!isCanonicalBase64(salt) || !isCanonicalBase64(digest)) return false;
+
+  const params = new Map<string, string>();
+  for (const rawParam of rawParams.split(",")) {
+    const match = /^(m|t|p)=(\d+)$/.exec(rawParam);
+    if (!match || params.has(match[1])) return false;
+    params.set(match[1], match[2]);
+  }
+  return params.size === 3;
+}
+
 app.post(
   VERIFY_PATH,
   requireJwt,
   requireExpClaim,
+  requireSubject,
   (c, next) => {
     c.header("Cache-Control", "no-store");
     return next();
   },
   timeout(10_000),
-  bodyLimit({ maxSize: 32 * 1024 }),
+  requireJsonContentType,
+  validateContentLength,
+  bodyLimit({ maxSize: MAX_BODY_BYTES }),
   validator("json", (value, c) => {
     if (
       typeof value !== "object" ||
@@ -192,7 +259,8 @@ app.post(
       target.length === 0 ||
       input.length > MAX_INPUT_LENGTH ||
       target.length > MAX_TARGET_LENGTH ||
-      !target.startsWith(ARGON2_PHC_PREFIX)
+      !target.startsWith(ARGON2_PHC_PREFIX) ||
+      !isValidArgon2Phc(target)
     ) {
       return invalidInput(c);
     }
@@ -216,16 +284,47 @@ app.post(
       return verifyFailed(c);
     }
 
+    const signal = c.req.raw.signal;
+    if (signal.aborted) {
+      return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 499);
+    }
+
     let success: boolean;
     if (!argon2Limiter.tryAcquire()) {
-      return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429);
+      return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429, {
+        "Retry-After": "1",
+      });
     }
     try {
-      success = await argon2.verify(target, input, {
+      const verifyPromise = argon2.verify(target, input, {
         secret: Buffer.from(ARGON2_SECRET, "utf8"),
       });
-    } catch {
-      return verifyFailed(c);
+
+      let onAbort: (() => void) | undefined;
+      const abortPromise = new Promise<"aborted">((resolve) => {
+        onAbort = () => resolve("aborted");
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+
+      const result = await Promise.race([verifyPromise, abortPromise]);
+
+      if (onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+
+      if (result === "aborted") {
+        return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 499);
+      }
+
+      success = result;
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "argon2_verify_error",
+          name: error instanceof Error ? error.name : "UnknownError",
+        }),
+      );
+      return c.json({ success: false, errcode: "INTERNAL_ERROR" }, 500);
     } finally {
       argon2Limiter.release();
     }
@@ -263,6 +362,7 @@ app.onError((err, c) => {
         {
           400: "INVALID_REQUEST",
           401: "UNAUTHORIZED",
+          403: "FORBIDDEN",
           404: "NOT_FOUND",
           413: "PAYLOAD_TOO_LARGE",
           429: "TOO_MANY_REQUESTS",

@@ -55,7 +55,13 @@ describe("POST /test-path", () => {
   }
 
   function phcString(m: number, t: number, p: number, prefix = "$argon2id$") {
-    return `${prefix}v=19$m=${m},t=${t},p=${p}$c2FsdHNhbHQ$ZGF0YQ`;
+    const salt = Buffer.from("0123456789abcdef")
+      .toString("base64")
+      .replace(/=+$/, "");
+    const digest = Buffer.from("0123456789abcdef0123456789abcdef")
+      .toString("base64")
+      .replace(/=+$/, "");
+    return `${prefix}v=19$m=${m},t=${t},p=${p}$${salt}$${digest}`;
   }
 
   async function postVerify(
@@ -150,6 +156,21 @@ describe("POST /test-path", () => {
     });
   });
 
+  it("returns 400 when the content type is not exactly JSON", async () => {
+    const token = await createToken();
+    const response = await app.request("/test-path", {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ input: "password", target: "hash" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual(INVALID_INPUT_BODY);
+  });
+
   it("returns 400 for a null JSON body", async () => {
     const token = await createToken();
 
@@ -182,6 +203,18 @@ describe("POST /test-path", () => {
       "$argon2id$v=19$m=65536$c2FsdHNhbHQ$ZGF0YQ$extra",
       400,
       INVALID_INPUT_BODY,
+    );
+  });
+
+  it("returns VERIFY_FAILED for an Argon2 hash with a short digest", async () => {
+    const salt = Buffer.from("0123456789abcdef")
+      .toString("base64")
+      .replace(/=+$/, "");
+    await expectVerify(
+      "correct-password",
+      `${ARGON2_PHC_PREFIX}v=19$m=65536,t=3,p=4$${salt}$ZGF0YQ`,
+      200,
+      VERIFY_FAILED_BODY,
     );
   });
 
@@ -320,6 +353,29 @@ describe("POST /test-path", () => {
     await expectVerify("correct-password", hash, 401, undefined, token);
   });
 
+  it("returns 403 when a valid token has no subject", async () => {
+    const hash = await createHash("correct-password");
+    const now = Math.floor(Date.now() / 1000);
+    const token = await sign(
+      {
+        iat: now,
+        exp: now + 60,
+        iss: JWT_ISSUER,
+        aud: JWT_AUDIENCE,
+      },
+      process.env.JWT_SECRET!,
+      "HS256",
+    );
+
+    await expectVerify(
+      "correct-password",
+      hash,
+      403,
+      { success: false, errcode: "FORBIDDEN" },
+      token,
+    );
+  });
+
   it("returns 401 for a token with a non-numeric exp claim", async () => {
     const hash = await createHash("correct-password");
     const token = await sign(
@@ -385,6 +441,15 @@ describe("POST /test-path", () => {
     const token = await createToken({ iat: now + 60, exp: now + 120 });
 
     await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("accepts a token issued slightly in the future within clock skew", async () => {
+    const password = "correct-password";
+    const hash = await createHash(password);
+    const now = Math.floor(Date.now() / 1000);
+    const token = await createToken({ iat: now + 10, exp: now + 70 });
+
+    await expectVerify(password, hash, 200, SUCCESS_BODY, token);
   });
 
   it("returns 401 for a token with non-numeric iat", async () => {
@@ -504,11 +569,12 @@ describe("Semaphore", () => {
     expect(sem.tryAcquire()).toBe(true);
   });
 
-  it("tryAcquire returns true when queue is below maxQueue", () => {
-    const sem = new Semaphore(0, 10);
-    sem.acquire();
-    sem.acquire();
+  it("tryAcquire returns false when permits are exhausted", () => {
+    const sem = new Semaphore(2, 10);
     expect(sem.tryAcquire()).toBe(true);
+    expect(sem.tryAcquire()).toBe(true);
+    expect(sem.tryAcquire()).toBe(false);
+    expect(sem.waiting).toBe(0);
   });
 
   it("tryAcquire returns false when queue is full", () => {
