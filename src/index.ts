@@ -364,8 +364,6 @@ app.post(
   },
 );
 
-app.get("/", (c) => c.json({ ok: true }));
-
 app.use(
   methodNotAllowed({
     app,

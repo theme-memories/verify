@@ -655,13 +655,6 @@ describe("POST /test-path", () => {
 
     await expectVerify("correct-password", hash, 401, undefined, token);
   });
-
-  it("returns 200 for the root health endpoint", async () => {
-    const response = await app.request("/");
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true });
-  });
 });
 
 describe("JWT algorithm restrictions", () => {
