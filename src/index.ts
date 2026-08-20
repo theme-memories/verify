@@ -69,8 +69,8 @@ const VERIFY_RATE_LIMIT_RULE_ID = requireEnv("VERIFY_RATE_LIMIT_RULE_ID");
 const JWT_MAX_LIFETIME = 120;
 const JWT_CLOCK_SKEW_TOLERANCE = 30;
 
-function invalidInput(c: Context) {
-  return c.json({ success: false, errcode: "INVALID_INPUT" }, 400);
+function invalidInput(c: Context): Response {
+  return c.json({ success: false, errcode: "INVALID_INPUT" }, 400) as Response;
 }
 
 function verifyFailed(c: Context) {
@@ -216,7 +216,7 @@ const requireRateLimit: MiddlewareHandler = async (c, next) => {
       return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429, {
         "Retry-After": "60",
         "Cache-Control": "no-store",
-      });
+      }) as Response;
     }
   } catch {
     /* Vercel firewall sdk is not available, fail open */
@@ -239,7 +239,10 @@ const validateContentLength: MiddlewareHandler = async (c, next) => {
     if (!/^(0|[1-9]\d*)$/.test(rawLength)) return invalidInput(c);
     const length = Number(rawLength);
     if (!Number.isSafeInteger(length) || length > MAX_BODY_BYTES) {
-      return c.json({ success: false, errcode: "PAYLOAD_TOO_LARGE" }, 413);
+      return c.json(
+        { success: false, errcode: "PAYLOAD_TOO_LARGE" },
+        413,
+      ) as Response;
     }
   }
   await next();
@@ -312,7 +315,10 @@ app.post(
     };
   }),
   async (c) => {
-    const { input, target } = c.req.valid("json");
+    const { input, target } = c.req.valid("json" as never) as {
+      input: string;
+      target: string;
+    };
 
     let needsRehash: boolean;
     try {
