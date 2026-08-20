@@ -77,7 +77,7 @@ function verifyFailed(c: Context) {
 
 const app = new Hono();
 
-app.use("*", secureHeaders());
+app.use("*", secureHeaders({ xFrameOptions: false }));
 
 const requireJwt: MiddlewareHandler = async (c, next) => {
   const authorization = c.req.header("Authorization");
@@ -149,7 +149,6 @@ export const EXPECTED_ARGON2 = {
 };
 
 const argon2Limiter = new Semaphore(2, 16);
-
 const requireExpClaim: MiddlewareHandler = async (c, next) => {
   const payload = c.get("jwtPayload") as
     { exp?: number; iat?: number } | undefined;
