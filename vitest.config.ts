@@ -8,7 +8,6 @@ export default defineConfig({
       JWT_ISSUER: "https://test.example",
       JWT_AUDIENCE: "https://test-verify.example",
       VERIFY_PATH: "/test-path",
-      VERIFY_RATE_LIMIT_RULE_ID: "test-rule-id",
     },
   },
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import argon2 from "argon2";
 import { sign } from "hono/jwt";
 import app, {
@@ -8,10 +8,6 @@ import app, {
   JWT_ISSUER,
   Semaphore,
 } from "./index.js";
-
-vi.mock("@vercel/firewall", () => ({
-  checkRateLimit: vi.fn(async () => ({ rateLimited: false })),
-}));
 
 const TEST_PEPPER = "test-pepper-secret-1234567890123456";
 const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";

@@ -6,7 +6,6 @@ import { validator } from "hono/validator";
 import { jwt } from "hono/jwt";
 import { secureHeaders } from "hono/secure-headers";
 import { methodNotAllowed } from "hono/method-not-allowed";
-import { checkRateLimit } from "@vercel/firewall";
 import argon2 from "argon2";
 
 export const ARGON2_PHC_PREFIX = "$argon2id$";
@@ -65,7 +64,6 @@ export const VERIFY_PATH = rawVerifyPath;
 
 const JWT_SECRET = requireStrongEnv("JWT_SECRET");
 const ARGON2_SECRET = requireStrongEnv("ARGON2_SECRET");
-const VERIFY_RATE_LIMIT_RULE_ID = requireEnv("VERIFY_RATE_LIMIT_RULE_ID");
 const JWT_MAX_LIFETIME = 120;
 const JWT_CLOCK_SKEW_TOLERANCE = 30;
 
@@ -202,26 +200,6 @@ function auditVerify(c: Context, success: boolean, errcode: string | null) {
   console.info(JSON.stringify({ event: "verify", sub, success, errcode }));
 }
 
-const requireRateLimit: MiddlewareHandler = async (c, next) => {
-  const sub =
-    (c.get("jwtPayload") as { sub?: string } | undefined)?.sub ?? "unknown";
-  try {
-    const { rateLimited } = await checkRateLimit(VERIFY_RATE_LIMIT_RULE_ID, {
-      request: c.req.raw,
-      rateLimitKey: sub,
-    });
-    if (rateLimited) {
-      return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429, {
-        "Retry-After": "60",
-        "Cache-Control": "no-store",
-      }) as Response;
-    }
-  } catch {
-    /* Vercel firewall sdk is not available, fail open */
-  }
-  await next();
-};
-
 const requireJsonContentType: MiddlewareHandler = async (c, next) => {
   const contentType = (c.req.header("Content-Type") ?? "")
     .split(";", 1)[0]
@@ -274,7 +252,6 @@ app.post(
   requireJwt,
   requireExpClaim,
   requireSubject,
-  requireRateLimit,
   (c, next) => {
     c.header("Cache-Control", "no-store");
     return next();

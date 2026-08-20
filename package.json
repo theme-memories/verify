@@ -10,7 +10,6 @@
   "license": "Apache-2.0",
   "type": "module",
   "dependencies": {
-    "@vercel/firewall": "^1.2.5",
     "argon2": "^0.45.1",
     "hono": "^4.13.3"
   },
