@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import argon2 from "argon2";
 import { sign } from "hono/jwt";
 import app, {
@@ -8,6 +8,10 @@ import app, {
   JWT_ISSUER,
   Semaphore,
 } from "./index.js";
+
+vi.mock("@vercel/firewall", () => ({
+  checkRateLimit: vi.fn(async () => ({ rateLimited: false })),
+}));
 
 const TEST_PEPPER = "test-pepper-secret-1234567890123456";
 const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
@@ -537,7 +541,7 @@ describe("POST /test-path", () => {
   });
 
   it("sets security headers on responses", async () => {
-    const response = await app.request("/");
+    const response = await app.request("/nonexistent");
 
     expect(response.status).toBe(404);
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
@@ -603,6 +607,64 @@ describe("POST /test-path", () => {
     expect(bodyStr).not.toContain("Bearer");
     expect(bodyStr).not.toContain("JWT_SECRET");
     expect(response.status).toBe(401);
+  });
+
+  it("returns 401 for a token with a trailing-slash issuer", async () => {
+    const hash = await createHash("correct-password");
+    const token = await sign(
+      {
+        sub: "test-worker",
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 60,
+        iss: `${JWT_ISSUER}/`,
+        aud: JWT_AUDIENCE,
+      },
+      process.env.JWT_SECRET!,
+      "HS256",
+    );
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("returns 401 for a token with a non-HTTPS issuer", async () => {
+    const hash = await createHash("correct-password");
+    const token = await sign(
+      {
+        sub: "test-worker",
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 60,
+        iss: "http://test.example",
+        aud: JWT_AUDIENCE,
+      },
+      process.env.JWT_SECRET!,
+      "HS256",
+    );
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("returns 401 for a token with a mismatched audience", async () => {
+    const hash = await createHash("correct-password");
+    const token = await sign(
+      {
+        sub: "test-worker",
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 60,
+        iss: JWT_ISSUER,
+        aud: "https://wrong-audience.example",
+      },
+      process.env.JWT_SECRET!,
+      "HS256",
+    );
+
+    await expectVerify("correct-password", hash, 401, undefined, token);
+  });
+
+  it("returns 200 for the root health endpoint", async () => {
+    const response = await app.request("/");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
   });
 });
 

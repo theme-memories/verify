@@ -6,6 +6,7 @@ import { validator } from "hono/validator";
 import { jwt } from "hono/jwt";
 import { secureHeaders } from "hono/secure-headers";
 import { methodNotAllowed } from "hono/method-not-allowed";
+import { checkRateLimit } from "@vercel/firewall";
 import argon2 from "argon2";
 
 export const ARGON2_PHC_PREFIX = "$argon2id$";
@@ -17,8 +18,12 @@ const SECRET_MIN_LENGTH = 32;
 const VERIFY_PATH_PATTERN = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 
 function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
+  const raw = process.env[name];
+  if (!raw) {
+    throw new Error(`${name} is not set`);
+  }
+  const value = raw.trim();
+  if (value.length === 0) {
     throw new Error(`${name} is not set`);
   }
   return value;
@@ -60,6 +65,7 @@ export const VERIFY_PATH = rawVerifyPath;
 
 const JWT_SECRET = requireStrongEnv("JWT_SECRET");
 const ARGON2_SECRET = requireStrongEnv("ARGON2_SECRET");
+const VERIFY_RATE_LIMIT_RULE_ID = requireEnv("VERIFY_RATE_LIMIT_RULE_ID");
 const JWT_MAX_LIFETIME = 120;
 const JWT_CLOCK_SKEW_TOLERANCE = 30;
 
@@ -139,7 +145,7 @@ export class Semaphore {
 }
 
 export const EXPECTED_ARGON2 = {
-  memoryCost: 19456, // 19 MiB
+  memoryCost: 19456,
   timeCost: 2,
   parallelism: 1,
 };
@@ -186,6 +192,34 @@ const requireSubject: MiddlewareHandler = async (c, next) => {
     !/^[A-Za-z0-9_-]{1,128}$/.test(payload.sub)
   ) {
     throw new HTTPException(403, { message: "token subject is invalid" });
+  }
+  await next();
+};
+
+function auditVerify(c: Context, success: boolean, errcode: string | null) {
+  const sub =
+    (c.get("jwtPayload") as { sub?: string } | undefined)?.sub ?? "unknown";
+  console.info(JSON.stringify({ event: "verify", sub, success, errcode }));
+}
+
+const requireRateLimit: MiddlewareHandler = async (c, next) => {
+  const sub =
+    (c.get("jwtPayload") as { sub?: string } | undefined)?.sub ?? "unknown";
+  const ip =
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  try {
+    const { rateLimited } = await checkRateLimit(VERIFY_RATE_LIMIT_RULE_ID, {
+      request: c.req.raw,
+      rateLimitKey: `${ip}:${sub}`,
+    });
+    if (rateLimited) {
+      return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429, {
+        "Retry-After": "60",
+        "Cache-Control": "no-store",
+      });
+    }
+  } catch {
+    /* Vercel firewall sdk is not available, fail open */
   }
   await next();
 };
@@ -239,12 +273,13 @@ app.post(
   requireJwt,
   requireExpClaim,
   requireSubject,
+  requireRateLimit,
   (c, next) => {
     c.header("Cache-Control", "no-store");
     return next();
   },
-  timeout(10_000),
   requireJsonContentType,
+  timeout(10_000),
   validateContentLength,
   bodyLimit({ maxSize: MAX_BODY_BYTES }),
   validator("json", (value, c) => {
@@ -287,6 +322,7 @@ app.post(
     }
 
     if (needsRehash) {
+      auditVerify(c, false, "VERIFY_FAILED");
       return verifyFailed(c);
     }
 
@@ -333,17 +369,21 @@ app.post(
           name: error instanceof Error ? error.name : "UnknownError",
         }),
       );
+      auditVerify(c, false, "INTERNAL_ERROR");
       return c.json({ success: false, errcode: "INTERNAL_ERROR" }, 500);
     } finally {
       argon2Limiter.release();
     }
 
+    auditVerify(c, success, success ? null : "VERIFY_FAILED");
     return c.json({
       success,
       errcode: success ? null : "VERIFY_FAILED",
     });
   },
 );
+
+app.get("/", (c) => c.json({ ok: true }));
 
 app.use(
   methodNotAllowed({
