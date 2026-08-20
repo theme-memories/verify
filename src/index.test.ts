@@ -3,6 +3,7 @@ import argon2 from "argon2";
 import { sign } from "hono/jwt";
 import app, {
   ARGON2_PHC_PREFIX,
+  EXPECTED_ARGON2,
   JWT_AUDIENCE,
   JWT_ISSUER,
   Semaphore,
@@ -14,6 +15,13 @@ const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
 const SUCCESS_BODY = { success: true, errcode: null };
 const INVALID_INPUT_BODY = { success: false, errcode: "INVALID_INPUT" };
 const VERIFY_FAILED_BODY = { success: false, errcode: "VERIFY_FAILED" };
+
+async function createHash(password: string, pepper = TEST_PEPPER) {
+  return argon2.hash(password, {
+    secret: Buffer.from(pepper, "utf8"),
+    ...EXPECTED_ARGON2,
+  });
+}
 
 describe("POST /test-path", () => {
   beforeEach(() => {
@@ -32,12 +40,6 @@ describe("POST /test-path", () => {
     delete process.env.VERIFY_PATH;
   });
 
-  async function createHash(password: string, pepper = TEST_PEPPER) {
-    return argon2.hash(password, {
-      secret: Buffer.from(pepper, "utf8"),
-    });
-  }
-
   async function createToken(payload: Record<string, unknown> = {}) {
     const now = Math.floor(Date.now() / 1000);
     return sign(
@@ -54,14 +56,20 @@ describe("POST /test-path", () => {
     );
   }
 
-  function phcString(m: number, t: number, p: number, prefix = "$argon2id$") {
+  function phcString(
+    m: number,
+    t: number,
+    p: number,
+    prefix = "$argon2id$",
+    version = 0x13,
+  ) {
     const salt = Buffer.from("0123456789abcdef")
       .toString("base64")
       .replace(/=+$/, "");
     const digest = Buffer.from("0123456789abcdef0123456789abcdef")
       .toString("base64")
       .replace(/=+$/, "");
-    return `${prefix}v=19$m=${m},t=${t},p=${p}$${salt}$${digest}`;
+    return `${prefix}v=${version}$m=${m},t=${t},p=${p}$${salt}$${digest}`;
   }
 
   async function postVerify(
@@ -274,6 +282,42 @@ describe("POST /test-path", () => {
     await expectVerify(
       "correct-password",
       phcString(65_536, 100_000, 4),
+      200,
+      VERIFY_FAILED_BODY,
+    );
+  });
+
+  it("returns VERIFY_FAILED for a hash with a parallelism mismatch only", async () => {
+    await expectVerify(
+      "correct-password",
+      phcString(19_456, 2, 4),
+      200,
+      VERIFY_FAILED_BODY,
+    );
+  });
+
+  it("returns VERIFY_FAILED for a hash with a memory-cost mismatch only", async () => {
+    await expectVerify(
+      "correct-password",
+      phcString(65_536, 2, 1),
+      200,
+      VERIFY_FAILED_BODY,
+    );
+  });
+
+  it("returns VERIFY_FAILED for a hash with a time-cost mismatch only", async () => {
+    await expectVerify(
+      "correct-password",
+      phcString(19_456, 3, 1),
+      200,
+      VERIFY_FAILED_BODY,
+    );
+  });
+
+  it("returns VERIFY_FAILED for a hash with a non-default version", async () => {
+    await expectVerify(
+      "correct-password",
+      phcString(19_456, 2, 1, "$argon2id$", 0x10),
       200,
       VERIFY_FAILED_BODY,
     );
@@ -559,6 +603,80 @@ describe("POST /test-path", () => {
     expect(bodyStr).not.toContain("Bearer");
     expect(bodyStr).not.toContain("JWT_SECRET");
     expect(response.status).toBe(401);
+  });
+});
+
+describe("JWT algorithm restrictions", () => {
+  beforeEach(() => {
+    process.env.ARGON2_SECRET = TEST_PEPPER;
+    process.env.JWT_SECRET = TEST_JWT_SECRET;
+    process.env.JWT_ISSUER = "https://test.example";
+    process.env.JWT_AUDIENCE = "https://test-verify.example";
+    process.env.VERIFY_PATH = "/test-path";
+  });
+
+  afterEach(() => {
+    delete process.env.ARGON2_SECRET;
+    delete process.env.JWT_SECRET;
+    delete process.env.JWT_ISSUER;
+    delete process.env.JWT_AUDIENCE;
+    delete process.env.VERIFY_PATH;
+  });
+
+  async function postWithToken(token: string) {
+    const hash = await createHash("correct-password");
+    return app.request("/test-path", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ input: "correct-password", target: hash }),
+    });
+  }
+
+  async function tokenWithAlg(alg: "HS256" | "HS384" | "HS512") {
+    const now = Math.floor(Date.now() / 1000);
+    return sign(
+      {
+        sub: "test-worker",
+        iat: now,
+        exp: now + 60,
+        iss: JWT_ISSUER,
+        aud: JWT_AUDIENCE,
+      },
+      process.env.JWT_SECRET!,
+      alg,
+    );
+  }
+
+  it("returns 401 for a token signed with HS384", async () => {
+    const res = await postWithToken(await tokenWithAlg("HS384"));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 for a token signed with HS512", async () => {
+    const res = await postWithToken(await tokenWithAlg("HS512"));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 for a token with alg=none", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(
+      JSON.stringify({ alg: "none", typ: "JWT" }),
+    ).toString("base64url");
+    const payload = Buffer.from(
+      JSON.stringify({
+        sub: "test-worker",
+        iat: now,
+        exp: now + 60,
+        iss: JWT_ISSUER,
+        aud: JWT_AUDIENCE,
+      }),
+    ).toString("base64url");
+    const token = `${header}.${payload}.`;
+    const res = await postWithToken(token);
+    expect(res.status).toBe(401);
   });
 });
 

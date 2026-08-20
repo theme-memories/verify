@@ -138,7 +138,13 @@ export class Semaphore {
   }
 }
 
-const argon2Limiter = new Semaphore(2);
+export const EXPECTED_ARGON2 = {
+  memoryCost: 19456, // 19 MiB
+  timeCost: 2,
+  parallelism: 1,
+};
+
+const argon2Limiter = new Semaphore(2, 16);
 
 const requireExpClaim: MiddlewareHandler = async (c, next) => {
   const payload = c.get("jwtPayload") as
@@ -275,7 +281,7 @@ app.post(
 
     let needsRehash: boolean;
     try {
-      needsRehash = argon2.needsRehash(target);
+      needsRehash = argon2.needsRehash(target, EXPECTED_ARGON2);
     } catch {
       return invalidInput(c);
     }
@@ -290,11 +296,14 @@ app.post(
     }
 
     let success: boolean;
-    if (!argon2Limiter.tryAcquire()) {
+    try {
+      await argon2Limiter.acquire();
+    } catch {
       return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429, {
         "Retry-After": "1",
       });
     }
+
     try {
       const verifyPromise = argon2.verify(target, input, {
         secret: Buffer.from(ARGON2_SECRET, "utf8"),
