@@ -205,12 +205,10 @@ function auditVerify(c: Context, success: boolean, errcode: string | null) {
 const requireRateLimit: MiddlewareHandler = async (c, next) => {
   const sub =
     (c.get("jwtPayload") as { sub?: string } | undefined)?.sub ?? "unknown";
-  const ip =
-    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   try {
     const { rateLimited } = await checkRateLimit(VERIFY_RATE_LIMIT_RULE_ID, {
       request: c.req.raw,
-      rateLimitKey: `${ip}:${sub}`,
+      rateLimitKey: sub,
     });
     if (rateLimited) {
       return c.json({ success: false, errcode: "TOO_MANY_REQUESTS" }, 429, {
