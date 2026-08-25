@@ -901,7 +901,6 @@ async function drainVerify(resolvers: Array<(value: boolean) => void>) {
   }
 }
 
-/** Real macrotask pump, immune to vi.useFakeTimers(). */
 const realSetTimeout = setTimeout.bind(globalThis);
 const realTick = () =>
   new Promise<void>((resolve) => {
