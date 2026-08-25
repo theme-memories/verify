@@ -7,6 +7,7 @@ import { jwt } from "hono/jwt";
 import { secureHeaders } from "hono/secure-headers";
 import { methodNotAllowed } from "hono/method-not-allowed";
 import argon2 from "argon2";
+import { createClient } from "redis";
 
 export const ARGON2_PHC_PREFIX = "$argon2id$";
 export const MAX_INPUT_LENGTH = 1024;
@@ -15,9 +16,61 @@ const MAX_BODY_BYTES = 32 * 1024;
 const MAX_AUTHORIZATION_LENGTH = 4096;
 const SECRET_MIN_LENGTH = 32;
 const VERIFY_PATH_PATTERN = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
+const VERIFY_PATH_MAX_LENGTH = 256;
+const ARGON2_RELEASE_WATCHDOG_MS = 15_000;
 
-function requireEnv(name: string): string {
-  const raw = process.env[name];
+type EnvSource = Record<string, string | undefined>;
+
+export interface ReplayStore {
+  record(jti: string, ttlSeconds: number): Promise<boolean>;
+}
+
+export function createRedisStore(url: string): ReplayStore {
+  const client = createClient({ url });
+  client.on("error", (error) => {
+    console.error(
+      JSON.stringify({
+        event: "replay_store_error",
+        name: error instanceof Error ? error.name : "UnknownError",
+      }),
+    );
+  });
+
+  let connecting: Promise<void> | null = null;
+  async function ensureConnected(): Promise<void> {
+    if (client.isOpen) return;
+    connecting ??= client
+      .connect()
+      .then(() => undefined)
+      .finally(() => {
+        connecting = null;
+      });
+    await connecting;
+  }
+
+  return {
+    async record(jti: string, ttlSeconds: number): Promise<boolean> {
+      await ensureConnected();
+      const result = await client.set(`jti:${jti}`, "1", {
+        condition: "NX",
+        expiration: { type: "EX", value: Math.max(1, Math.ceil(ttlSeconds)) },
+      });
+      return result === "OK";
+    },
+  };
+}
+
+export interface AppConfig {
+  jwtIssuer: string;
+  jwtAudience: string;
+  verifyPath: string;
+  jwtSecret: string;
+  argon2Secret: string;
+  redisUrl: string;
+}
+
+function requireEnv(env: EnvSource, name: string): string {
+  const raw = env[name];
   if (!raw) {
     throw new Error(`${name} is not set`);
   }
@@ -28,21 +81,18 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function requireStrongEnv(name: string): string {
-  const value = requireEnv(name);
+function requireStrongEnv(env: EnvSource, name: string): string {
+  const value = requireEnv(env, name);
   if (Buffer.byteLength(value, "utf8") < SECRET_MIN_LENGTH) {
-    throw new Error(
-      `${name} must be at least ${SECRET_MIN_LENGTH} characters (got ${value.length})`,
-    );
+    throw new Error(`${name} must be at least ${SECRET_MIN_LENGTH} bytes long`);
   }
   return value;
 }
 
-function requireHttpsUrl(name: string): string {
-  const value = requireEnv(name);
+function requireHttpsUrl(env: EnvSource, name: string): string {
+  const value = requireEnv(env, name);
   try {
-    const url = new URL(value);
-    if (url.protocol !== "https:") {
+    if (new URL(value).protocol !== "https:") {
       throw new Error();
     }
   } catch {
@@ -51,21 +101,81 @@ function requireHttpsUrl(name: string): string {
   return value;
 }
 
-export const JWT_ISSUER = requireHttpsUrl("JWT_ISSUER");
-export const JWT_AUDIENCE = requireHttpsUrl("JWT_AUDIENCE");
-
-const rawVerifyPath = requireEnv("VERIFY_PATH");
-if (!VERIFY_PATH_PATTERN.test(rawVerifyPath) || rawVerifyPath.length > 256) {
-  throw new Error(
-    `VERIFY_PATH must be a literal path containing only letters, numbers, "_", "-", and "/" (got "${rawVerifyPath}")`,
-  );
+function requireRedisUrl(env: EnvSource, name: string): string {
+  const value = requireEnv(env, name);
+  let protocol: string;
+  try {
+    protocol = new URL(value).protocol;
+  } catch {
+    throw new Error(`${name} must be a valid URL (got "${value}")`);
+  }
+  if (protocol !== "redis:" && protocol !== "rediss:") {
+    throw new Error(
+      `${name} must use the redis:// (or rediss://) scheme (got "${value}")`,
+    );
+  }
+  return value;
 }
-export const VERIFY_PATH = rawVerifyPath;
 
-const JWT_SECRET = requireStrongEnv("JWT_SECRET");
-const ARGON2_SECRET = requireStrongEnv("ARGON2_SECRET");
+export function loadConfig(env: EnvSource): AppConfig {
+  const jwtIssuer = requireHttpsUrl(env, "JWT_ISSUER");
+  const jwtAudience = requireHttpsUrl(env, "JWT_AUDIENCE");
+
+  const verifyPath = requireEnv(env, "VERIFY_PATH");
+  if (verifyPath.length > VERIFY_PATH_MAX_LENGTH) {
+    throw new Error(
+      `VERIFY_PATH must be at most ${VERIFY_PATH_MAX_LENGTH} characters`,
+    );
+  }
+  if (verifyPath.endsWith("/")) {
+    throw new Error('VERIFY_PATH must not end with "/"');
+  }
+  if (!VERIFY_PATH_PATTERN.test(verifyPath)) {
+    throw new Error(
+      'VERIFY_PATH must start with "/" and contain only letters, numbers, "_", "-", and "/"',
+    );
+  }
+
+  return {
+    jwtIssuer,
+    jwtAudience,
+    verifyPath,
+    jwtSecret: requireStrongEnv(env, "JWT_SECRET"),
+    argon2Secret: requireStrongEnv(env, "ARGON2_SECRET"),
+    redisUrl: requireRedisUrl(env, "REDIS_URL"),
+  };
+}
+
+let config: AppConfig;
+try {
+  config = loadConfig(process.env);
+} catch (error) {
+  console.error(
+    JSON.stringify({
+      event: "config_error",
+      reason: error instanceof Error ? error.message : "unknown",
+    }),
+  );
+  throw error;
+}
+
+export const JWT_ISSUER = config.jwtIssuer;
+export const JWT_AUDIENCE = config.jwtAudience;
+export const VERIFY_PATH = config.verifyPath;
+
+const JWT_SECRET = config.jwtSecret;
+const ARGON2_SECRET = config.argon2Secret;
 const JWT_MAX_LIFETIME = 120;
 const JWT_CLOCK_SKEW_TOLERANCE = 30;
+
+export const replayStore: ReplayStore = createRedisStore(config.redisUrl);
+
+console.info(
+  JSON.stringify({
+    event: "config_loaded",
+    replay_protection: true,
+  }),
+);
 
 function invalidInput(c: Context): Response {
   return c.json({ success: false, errcode: "INVALID_INPUT" }, 400) as Response;
@@ -77,7 +187,26 @@ function verifyFailed(c: Context) {
 
 const app = new Hono();
 
-app.use("*", secureHeaders({ xFrameOptions: false }));
+app.use(
+  "*",
+  secureHeaders({
+    xFrameOptions: "DENY",
+    contentSecurityPolicy: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+    permissionsPolicy: {
+      accelerometer: [],
+      camera: [],
+      geolocation: [],
+      gyroscope: [],
+      magnetometer: [],
+      microphone: [],
+      payment: [],
+      usb: [],
+    },
+  }),
+);
 
 const requireJwt: MiddlewareHandler = async (c, next) => {
   const authorization = c.req.header("Authorization");
@@ -96,8 +225,6 @@ const requireJwt: MiddlewareHandler = async (c, next) => {
   await jwt({
     secret: JWT_SECRET,
     alg: "HS256",
-    // Hono's default iat check rejects any future timestamp. The custom check
-    // below intentionally allows a small clock-skew window.
     verification: { iss: JWT_ISSUER, aud: JWT_AUDIENCE, iat: false },
   })(c, next);
 };
@@ -112,6 +239,9 @@ export class Semaphore {
   }
   get waiting(): number {
     return this.queue.length;
+  }
+  get available(): number {
+    return this.permits;
   }
   tryAcquire(): boolean {
     if (this.permits > 0) {
@@ -148,7 +278,7 @@ export const EXPECTED_ARGON2 = {
   parallelism: 1,
 };
 
-const argon2Limiter = new Semaphore(2, 16);
+export const argon2Limiter = new Semaphore(2, 16);
 const requireExpClaim: MiddlewareHandler = async (c, next) => {
   const payload = c.get("jwtPayload") as
     { exp?: number; iat?: number } | undefined;
@@ -190,6 +320,51 @@ const requireSubject: MiddlewareHandler = async (c, next) => {
   ) {
     throw new HTTPException(403, { message: "token subject is invalid" });
   }
+  await next();
+};
+
+const JTI_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+const requireFreshJti: MiddlewareHandler = async (c, next) => {
+  const payload = c.get("jwtPayload") as
+    { jti?: unknown; exp?: number } | undefined;
+  const now = Math.floor(Date.now() / 1000);
+  const { jti, exp } = payload ?? {};
+
+  if (
+    typeof jti !== "string" ||
+    !JTI_PATTERN.test(jti) ||
+    typeof exp !== "number" ||
+    !Number.isSafeInteger(exp)
+  ) {
+    auditVerify(c, false, "REPLAY_CHECK_FAILED");
+    return c.json({ success: false, errcode: "UNAUTHORIZED" }, 401);
+  }
+
+  const ttlSeconds = Math.min(
+    exp + JWT_CLOCK_SKEW_TOLERANCE - now,
+    JWT_MAX_LIFETIME + JWT_CLOCK_SKEW_TOLERANCE,
+  );
+
+  let firstSighting: boolean;
+  try {
+    firstSighting = await replayStore.record(jti, ttlSeconds);
+  } catch {
+    console.error(
+      JSON.stringify({
+        event: "replay_store_unavailable",
+        action: "fail_open",
+      }),
+    );
+    await next();
+    return;
+  }
+
+  if (!firstSighting) {
+    auditVerify(c, false, "REPLAY_DETECTED");
+    return c.json({ success: false, errcode: "REPLAY_DETECTED" }, 401);
+  }
+
   await next();
 };
 
@@ -251,6 +426,7 @@ app.post(
   requireJwt,
   requireExpClaim,
   requireSubject,
+  requireFreshJti,
   (c, next) => {
     c.header("Cache-Control", "no-store");
     return next();
@@ -320,10 +496,22 @@ app.post(
       });
     }
 
+    let released = false;
+    const releaseOnce = (): void => {
+      if (released) {
+        return;
+      }
+      released = true;
+      clearTimeout(watchdog);
+      argon2Limiter.release();
+    };
+    const watchdog = setTimeout(releaseOnce, ARGON2_RELEASE_WATCHDOG_MS);
+
     try {
       const verifyPromise = argon2.verify(target, input, {
         secret: Buffer.from(ARGON2_SECRET, "utf8"),
       });
+      void verifyPromise.then(releaseOnce, releaseOnce);
 
       let onAbort: (() => void) | undefined;
       const abortPromise = new Promise<"aborted">((resolve) => {
@@ -351,8 +539,6 @@ app.post(
       );
       auditVerify(c, false, "INTERNAL_ERROR");
       return c.json({ success: false, errcode: "INTERNAL_ERROR" }, 500);
-    } finally {
-      argon2Limiter.release();
     }
 
     auditVerify(c, success, success ? null : "VERIFY_FAILED");

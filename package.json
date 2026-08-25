@@ -1,6 +1,6 @@
 {
   "name": "verify",
-  "version": "26.8.25",
+  "version": "26.8.26",
   "description": "Argon2 verification module",
   "scripts": {
     "test": "vitest run",
@@ -11,7 +11,8 @@
   "type": "module",
   "dependencies": {
     "argon2": "^0.45.1",
-    "hono": "^4.13.4"
+    "hono": "^4.13.4",
+    "redis": "^6.2.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

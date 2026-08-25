@@ -8,6 +8,7 @@ export default defineConfig({
       JWT_ISSUER: "https://test.example",
       JWT_AUDIENCE: "https://test-verify.example",
       VERIFY_PATH: "/test-path",
+      REDIS_URL: "redis://default:test-password@localhost:6379",
     },
   },
 });
