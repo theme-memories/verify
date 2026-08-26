@@ -87,16 +87,16 @@ without a real Redis (the `redis` client is mocked in the tests).
 
 ### Environment variables
 
-| Variable                  | Description                                                                                                   |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `ARGON2_PEPPER`           | Server-side pepper mixed into every hash. **≥ 32 bytes.** Must match the value used when hashes were created. |
-| `JWT_VERIFICATION_SECRET` | HMAC secret (HS256) to verify caller JWTs. **≥ 32 bytes.**                                                    |
-| `JWT_ISSUER`              | Expected `iss` of JWTs. Must be a valid **HTTPS** URL.                                                        |
-| `JWT_AUDIENCE`            | Expected `aud` of JWTs. Must be a valid **HTTPS** URL.                                                        |
-| `VERIFY_PATH`             | Path of the endpoint, e.g. `/verify`. Must start with `/`, allowlist chars only, no trailing slash.           |
-| `REDIS_HOST`              | Redis hostname/IP.                                                                                            |
-| `REDIS_PORT`              | Redis port (1–65535).                                                                                         |
-| `REDIS_PASSWORD`          | Redis password (store connects as the `default` user).                                                        |
+| Variable         | Description                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| `ARGON2_SECRET`  | Server-side pepper mixed into every hash. **≥ 32 bytes.** Must match the value used when hashes were created. |
+| `JWT_SECRET`     | HMAC secret (HS256) to verify caller JWTs. **≥ 32 bytes.**                                                    |
+| `JWT_ISSUER`     | Expected `iss` of JWTs. Must be a valid **HTTPS** URL.                                                        |
+| `JWT_AUDIENCE`   | Expected `aud` of JWTs. Must be a valid **HTTPS** URL.                                                        |
+| `VERIFY_PATH`    | Path of the endpoint, e.g. `/verify`. Must start with `/`, allowlist chars only, no trailing slash.           |
+| `REDIS_HOST`     | Redis hostname/IP.                                                                                            |
+| `REDIS_PORT`     | Redis port (1–65535).                                                                                         |
+| `REDIS_PASSWORD` | Redis password (store connects as the `default` user).                                                        |
 
 ---
 
@@ -124,7 +124,7 @@ without a real Redis (the `redis` client is mocked in the tests).
 ## Security model
 
 1. **JWT auth:** caller must present `Authorization: Bearer <jwt>` signed with
-   `JWT_VERIFICATION_SECRET` (HS256 only — `alg=none`/HS384/HS512 are rejected), with a
+   `JWT_SECRET` (HS256 only — `alg=none`/HS384/HS512 are rejected), with a
    matching `iss`/`aud`, a required `iat`, and `exp` after `iat`. Token lifetime
    is capped (`JWT_MAX_LIFETIME = 120s`) with a small clock-skew tolerance.
 2. **Subject check:** `sub` must match `^[A-Za-z0-9_-]{1,128}$` (else `403`).
