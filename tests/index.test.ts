@@ -60,7 +60,7 @@ vi.mock("redis", () => ({
   },
 }));
 
-import {
+import app, {
   ARGON2_PHC_PREFIX,
   argon2Limiter,
   EXPECTED_ARGON2,
@@ -68,7 +68,6 @@ import {
   JWT_ISSUER,
   loadConfig,
   Semaphore,
-  app,
 } from "../src/index.js";
 
 const TEST_PEPPER = "test-pepper-secret-1234567890123456";
