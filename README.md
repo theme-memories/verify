@@ -82,11 +82,6 @@ without a real Redis (the `redis` client is mocked in the tests).
    - `supportsCancellation: true` enables request-abort propagation (the handler
      races `argon2.verify` against the abort signal to stop CPU work when a
      client disconnects).
-   - **Entry shape:** `src/index.ts` default-exports `handle(app)` from
-     `hono/vercel`, i.e. a _callable handler_ (Vercel requires the default
-     export to be a function or server — a raw Hono instance is rejected with
-     "Invalid export found"). The Hono `app` is also exported as a named export
-     for the test suite.
 6. **Set Environment Variables** (see table below). They are required; the
    function throws at startup if any are missing/invalid.
 
