@@ -478,7 +478,6 @@ app.post(
   timeout(10_000),
   validateContentLength,
   bodyLimit({ maxSize: MAX_BODY_BYTES }),
-  requireFreshJti,
   validator("json", (value, c) => {
     if (
       typeof value !== "object" ||
@@ -508,6 +507,7 @@ app.post(
       target,
     };
   }),
+  requireFreshJti,
   async (c) => {
     const { input, target } = c.req.valid("json" as never) as {
       input: string;

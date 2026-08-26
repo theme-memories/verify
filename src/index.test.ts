@@ -1494,6 +1494,34 @@ describe("replay protection (Redis required)", () => {
     expect(redisMocks.set).not.toHaveBeenCalled();
   });
 
+  it("does not burn the jti when the JSON body is malformed", async () => {
+    const res = await app.request("/test-path", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${await makeToken()}`,
+      },
+      body: "this is not json",
+    });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      errcode: "INVALID_REQUEST",
+    });
+    expect(redisMocks.set).not.toHaveBeenCalled();
+  });
+
+  it("does not touch the store when body validation fails", async () => {
+    const token = await makeToken();
+    const res = await postWithToken(token, { input: 123, target: 456 });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      errcode: "INVALID_INPUT",
+    });
+    expect(redisMocks.set).not.toHaveBeenCalled();
+  });
+
   it("does not touch the store when earlier validation fails", async () => {
     const now = Math.floor(Date.now() / 1000);
     const expired = await makeToken({ iat: now - 120, exp: now - 60 });
