@@ -18,8 +18,9 @@ const SECRET_MIN_LENGTH = 32;
 const VERIFY_PATH_PATTERN = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 const VERIFY_PATH_MAX_LENGTH = 256;
 const ARGON2_RELEASE_WATCHDOG_MS = 15_000;
-const REDIS_CONNECT_TIMEOUT_MS = 3_000;
+const REDIS_CONNECT_TIMEOUT_MS = 2_000;
 const REDIS_RECORD_TIMEOUT_MS = 3_000;
+const REDIS_MAX_RECONNECT_ATTEMPTS = 2;
 
 type EnvSource = Record<string, string | undefined>;
 
@@ -59,8 +60,10 @@ export function createRedisStore(config: RedisConnectionConfig): ReplayStore {
       port: config.port,
       tls: false,
       connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
-      reconnectStrategy: (retries) =>
-        Math.min(retries * 100, REDIS_CONNECT_TIMEOUT_MS),
+      reconnectStrategy: (retries) => {
+        if (retries >= REDIS_MAX_RECONNECT_ATTEMPTS) return false;
+        return Math.min(100 * 2 ** retries, 1_000);
+      },
     },
     username: "default",
     password: config.password,
@@ -88,20 +91,26 @@ export function createRedisStore(config: RedisConnectionConfig): ReplayStore {
 
   return {
     async record(jti: string, ttlSeconds: number): Promise<boolean> {
-      const result = await withTimeout(
-        (async () => {
-          await ensureConnected();
-          return client.set(`jti:${jti}`, "1", {
-            condition: "NX",
-            expiration: {
-              type: "EX",
-              value: Math.max(1, Math.ceil(ttlSeconds)),
-            },
-          });
-        })(),
-        REDIS_RECORD_TIMEOUT_MS,
-      );
-      return result === "OK";
+      try {
+        const result = await withTimeout(
+          (async () => {
+            await ensureConnected();
+            return client.set(`jti:${jti}`, "1", {
+              condition: "NX",
+              expiration: {
+                type: "EX",
+                value: Math.max(1, Math.ceil(ttlSeconds)),
+              },
+            });
+          })(),
+          REDIS_RECORD_TIMEOUT_MS,
+        );
+        return result === "OK";
+      } catch (error) {
+        client.destroy();
+        connecting = null;
+        throw error;
+      }
     },
   };
 }

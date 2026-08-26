@@ -16,17 +16,29 @@ const redisMocks = vi.hoisted(() => {
       (key: string, value: string, options: unknown) => Promise<"OK" | null>
     >();
   set.mockResolvedValue("OK");
-  return { set };
+  const destroy = vi.fn();
+  const clients: Array<{
+    options: {
+      socket?: {
+        connectTimeout?: number;
+        reconnectStrategy?: (retries: number) => false | number;
+      };
+    };
+    destroy: typeof destroy;
+  }> = [];
+  return { set, destroy, clients };
 });
 
 vi.mock("redis", () => ({
-  createClient: () => {
+  createClient: (options: (typeof redisMocks.clients)[number]["options"]) => {
     const client = {
       isOpen: false,
       on: () => client,
       connect: async () => {},
       set: redisMocks.set,
+      destroy: redisMocks.destroy,
     };
+    redisMocks.clients.push({ options, destroy: client.destroy });
     return client;
   },
 }));
@@ -1475,10 +1487,19 @@ describe("replay protection (Redis required)", () => {
         errcode: "SERVICE_UNAVAILABLE",
       });
       expect(errorSpy).toHaveBeenCalled();
+      expect(redisMocks.destroy).toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
     }
   }, 15_000);
+
+  it("uses bounded exponential Redis reconnects", () => {
+    const socket = redisMocks.clients[0]?.options.socket;
+    expect(socket?.connectTimeout).toBe(2_000);
+    expect(socket?.reconnectStrategy?.(0)).toBe(100);
+    expect(socket?.reconnectStrategy?.(1)).toBe(200);
+    expect(socket?.reconnectStrategy?.(2)).toBe(false);
+  });
 
   it("does not touch the store for a valid token with a bad Content-Type", async () => {
     const hash = await makeHash();
