@@ -91,8 +91,8 @@ export function loadConfig(env: EnvSource): AppConfig {
     jwtIssuer,
     jwtAudience,
     verifyPath,
-    jwtSecret: requireStrongEnv(env, "JWT_SECRET"),
-    argon2Secret: requireStrongEnv(env, "ARGON2_SECRET"),
+    jwtSecret: requireStrongEnv(env, "JWT_VERIFICATION_SECRET"),
+    argon2Secret: requireStrongEnv(env, "ARGON2_PEPPER"),
     redis: {
       host: redisHost,
       port: redisPort,

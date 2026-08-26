@@ -71,7 +71,7 @@ import app, {
 } from "../src/index.js";
 
 const TEST_PEPPER = "test-pepper-secret-1234567890123456";
-const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
+const TEST_JWT_VERIFICATION_SECRET = "test-jwt-secret-1234567890123456";
 
 const SUCCESS_BODY = { success: true, errcode: null };
 const INVALID_INPUT_BODY = { success: false, errcode: "INVALID_INPUT" };
@@ -86,16 +86,16 @@ async function createHash(password: string, pepper = TEST_PEPPER) {
 
 describe("POST /test-path", () => {
   beforeEach(() => {
-    process.env.ARGON2_SECRET = TEST_PEPPER;
-    process.env.JWT_SECRET = TEST_JWT_SECRET;
+    process.env.ARGON2_PEPPER = TEST_PEPPER;
+    process.env.JWT_VERIFICATION_SECRET = TEST_JWT_VERIFICATION_SECRET;
     process.env.JWT_ISSUER = "https://test.example";
     process.env.JWT_AUDIENCE = "https://test-verify.example";
     process.env.VERIFY_PATH = "/test-path";
   });
 
   afterEach(() => {
-    delete process.env.ARGON2_SECRET;
-    delete process.env.JWT_SECRET;
+    delete process.env.ARGON2_PEPPER;
+    delete process.env.JWT_VERIFICATION_SECRET;
     delete process.env.JWT_ISSUER;
     delete process.env.JWT_AUDIENCE;
     delete process.env.VERIFY_PATH;
@@ -113,7 +113,7 @@ describe("POST /test-path", () => {
         aud: JWT_AUDIENCE,
         ...payload,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
   }
@@ -452,7 +452,7 @@ describe("POST /test-path", () => {
         iss: JWT_ISSUER,
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -469,7 +469,7 @@ describe("POST /test-path", () => {
         iss: JWT_ISSUER,
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -490,7 +490,7 @@ describe("POST /test-path", () => {
         iat: Math.floor(Date.now() / 1000),
         exp: "not-a-number" as unknown as number,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -505,7 +505,7 @@ describe("POST /test-path", () => {
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 60,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -568,7 +568,7 @@ describe("POST /test-path", () => {
         iss: JWT_ISSUER,
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -647,7 +647,7 @@ describe("POST /test-path", () => {
         iss: JWT_ISSUER,
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -663,7 +663,7 @@ describe("POST /test-path", () => {
     expect(bodyStr).not.toContain("not-a-jwt");
     expect(bodyStr).not.toContain("Authorization");
     expect(bodyStr).not.toContain("Bearer");
-    expect(bodyStr).not.toContain("JWT_SECRET");
+    expect(bodyStr).not.toContain("JWT_VERIFICATION_SECRET");
     expect(response.status).toBe(401);
   });
 
@@ -677,7 +677,7 @@ describe("POST /test-path", () => {
         iss: `${JWT_ISSUER}/`,
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -694,7 +694,7 @@ describe("POST /test-path", () => {
         iss: "http://test.example",
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -711,7 +711,7 @@ describe("POST /test-path", () => {
         iss: JWT_ISSUER,
         aud: "https://wrong-audience.example",
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       "HS256",
     );
 
@@ -721,16 +721,16 @@ describe("POST /test-path", () => {
 
 describe("JWT algorithm restrictions", () => {
   beforeEach(() => {
-    process.env.ARGON2_SECRET = TEST_PEPPER;
-    process.env.JWT_SECRET = TEST_JWT_SECRET;
+    process.env.ARGON2_PEPPER = TEST_PEPPER;
+    process.env.JWT_VERIFICATION_SECRET = TEST_JWT_VERIFICATION_SECRET;
     process.env.JWT_ISSUER = "https://test.example";
     process.env.JWT_AUDIENCE = "https://test-verify.example";
     process.env.VERIFY_PATH = "/test-path";
   });
 
   afterEach(() => {
-    delete process.env.ARGON2_SECRET;
-    delete process.env.JWT_SECRET;
+    delete process.env.ARGON2_PEPPER;
+    delete process.env.JWT_VERIFICATION_SECRET;
     delete process.env.JWT_ISSUER;
     delete process.env.JWT_AUDIENCE;
     delete process.env.VERIFY_PATH;
@@ -758,7 +758,7 @@ describe("JWT algorithm restrictions", () => {
         iss: JWT_ISSUER,
         aud: JWT_AUDIENCE,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_VERIFICATION_SECRET!,
       alg,
     );
   }
@@ -830,8 +830,8 @@ describe("Semaphore", () => {
 });
 
 const TEST_ENV: Record<string, string> = {
-  ARGON2_SECRET: TEST_PEPPER,
-  JWT_SECRET: TEST_JWT_SECRET,
+  ARGON2_PEPPER: TEST_PEPPER,
+  JWT_VERIFICATION_SECRET: TEST_JWT_VERIFICATION_SECRET,
   JWT_ISSUER: "https://test.example",
   JWT_AUDIENCE: "https://test-verify.example",
   VERIFY_PATH: "/test-path",
@@ -868,7 +868,7 @@ async function makeToken(overrides: Record<string, unknown> = {}) {
       aud: JWT_AUDIENCE,
       ...overrides,
     },
-    process.env.JWT_SECRET!,
+    process.env.JWT_VERIFICATION_SECRET!,
     "HS256",
   );
 }
@@ -943,7 +943,7 @@ describe("loadConfig", () => {
       jwtIssuer: TEST_ENV.JWT_ISSUER,
       jwtAudience: TEST_ENV.JWT_AUDIENCE,
       verifyPath: "/test-path",
-      jwtSecret: TEST_JWT_SECRET,
+      jwtSecret: TEST_JWT_VERIFICATION_SECRET,
       argon2Secret: TEST_PEPPER,
       redis: {
         host: "localhost",
@@ -960,14 +960,14 @@ describe("loadConfig", () => {
   });
 
   it("rejects blank values", () => {
-    expect(() => loadConfig({ ...TEST_ENV, JWT_SECRET: "   " })).toThrow(
-      "JWT_SECRET",
-    );
+    expect(() =>
+      loadConfig({ ...TEST_ENV, JWT_VERIFICATION_SECRET: "   " }),
+    ).toThrow("JWT_VERIFICATION_SECRET");
   });
 
   it("rejects secrets shorter than 32 bytes", () => {
     expect(() =>
-      loadConfig({ ...TEST_ENV, ARGON2_SECRET: "too-short" }),
+      loadConfig({ ...TEST_ENV, ARGON2_PEPPER: "too-short" }),
     ).toThrow(/at least 32/);
   });
 
