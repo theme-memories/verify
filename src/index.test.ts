@@ -806,7 +806,9 @@ const TEST_ENV: Record<string, string> = {
   JWT_ISSUER: "https://test.example",
   JWT_AUDIENCE: "https://test-verify.example",
   VERIFY_PATH: "/test-path",
-  REDIS_URL: "redis://default:test-password@localhost:6379",
+  REDIS_HOST: "localhost",
+  REDIS_PORT: "6379",
+  REDIS_PASSWORD: "test-password",
 };
 const applyTestEnv = () => Object.assign(process.env, TEST_ENV);
 const clearTestEnv = () => {
@@ -915,7 +917,11 @@ describe("loadConfig", () => {
       verifyPath: "/test-path",
       jwtSecret: TEST_JWT_SECRET,
       argon2Secret: TEST_PEPPER,
-      redisUrl: TEST_ENV.REDIS_URL,
+      redis: {
+        host: "localhost",
+        port: 6379,
+        password: "test-password",
+      },
     });
   });
 
@@ -971,24 +977,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...TEST_ENV, VERIFY_PATH: "/te st" })).toThrow();
   });
 
-  it("rejects REDIS_URL with a non-redis scheme", () => {
-    expect(() =>
-      loadConfig({ ...TEST_ENV, REDIS_URL: "https://cache.example.com" }),
-    ).toThrow(/redis:\/\//);
-  });
-
-  it("rejects a malformed REDIS_URL", () => {
-    expect(() => loadConfig({ ...TEST_ENV, REDIS_URL: "not a url" })).toThrow(
-      "REDIS_URL",
-    );
-  });
-
-  it("accepts TLS rediss:// endpoints alongside plain redis://", () => {
-    expect(
-      loadConfig({ ...TEST_ENV, REDIS_URL: "rediss://default:pw@h:6379" })
-        .redisUrl,
-    ).toBe("rediss://default:pw@h:6379");
-  });
+  it.each(["abc", "0", "-1", "65536", "6379.5"])(
+    "rejects an invalid REDIS_PORT (%s)",
+    (port) => {
+      expect(() => loadConfig({ ...TEST_ENV, REDIS_PORT: port })).toThrow(
+        "REDIS_PORT",
+      );
+    },
+  );
 });
 
 describe("app-owned security headers", () => {
@@ -1371,7 +1367,7 @@ describe("audit logging", () => {
   });
 });
 
-describe("replay protection (REDIS_URL required)", () => {
+describe("replay protection (Redis required)", () => {
   beforeEach(applyTestEnv);
   afterEach(clearTestEnv);
 
@@ -1444,7 +1440,7 @@ describe("replay protection (REDIS_URL required)", () => {
     expect(redisMocks.set).not.toHaveBeenCalled();
   });
 
-  it("fails open when the store errors, with an alert log", async () => {
+  it("fails closed with 503 when the store errors, with an alert log", async () => {
     redisMocks.set.mockRejectedValue(new Error("connection refused"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -1452,12 +1448,50 @@ describe("replay protection (REDIS_URL required)", () => {
         input: "correct-password",
         target: await makeHash(),
       });
-      expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toEqual(SUCCESS_BODY_SHAPE.ok);
+      expect(res.status).toBe(503);
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      await expect(res.json()).resolves.toEqual({
+        success: false,
+        errcode: "SERVICE_UNAVAILABLE",
+      });
       expect(errorSpy).toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it("fails closed with 503 when the store hangs past the record timeout", async () => {
+    redisMocks.set.mockImplementation(() => new Promise<"OK">(() => {}));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await postJson({
+        input: "correct-password",
+        target: await makeHash(),
+      });
+      expect(res.status).toBe(503);
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      await expect(res.json()).resolves.toEqual({
+        success: false,
+        errcode: "SERVICE_UNAVAILABLE",
+      });
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  }, 15_000);
+
+  it("does not touch the store for a valid token with a bad Content-Type", async () => {
+    const hash = await makeHash();
+    const res = await postJson(
+      { input: "correct-password", target: hash },
+      { "Content-Type": "text/plain" },
+    );
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      errcode: "INVALID_INPUT",
+    });
+    expect(redisMocks.set).not.toHaveBeenCalled();
   });
 
   it("does not touch the store when earlier validation fails", async () => {

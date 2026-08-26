@@ -18,6 +18,8 @@ const SECRET_MIN_LENGTH = 32;
 const VERIFY_PATH_PATTERN = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 const VERIFY_PATH_MAX_LENGTH = 256;
 const ARGON2_RELEASE_WATCHDOG_MS = 15_000;
+const REDIS_CONNECT_TIMEOUT_MS = 3_000;
+const REDIS_RECORD_TIMEOUT_MS = 3_000;
 
 type EnvSource = Record<string, string | undefined>;
 
@@ -25,8 +27,44 @@ export interface ReplayStore {
   record(jti: string, ttlSeconds: number): Promise<boolean>;
 }
 
-export function createRedisStore(url: string): ReplayStore {
-  const client = createClient({ url });
+export interface RedisConnectionConfig {
+  host: string;
+  port: number;
+  password: string;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`redis command timed out after ${ms}ms`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+export function createRedisStore(config: RedisConnectionConfig): ReplayStore {
+  const client = createClient({
+    socket: {
+      host: config.host,
+      port: config.port,
+      tls: false,
+      connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
+      reconnectStrategy: (retries) =>
+        Math.min(retries * 100, REDIS_CONNECT_TIMEOUT_MS),
+    },
+    username: "default",
+    password: config.password,
+  });
   client.on("error", (error) => {
     console.error(
       JSON.stringify({
@@ -45,16 +83,24 @@ export function createRedisStore(url: string): ReplayStore {
       .finally(() => {
         connecting = null;
       });
-    await connecting;
+    await withTimeout(connecting, REDIS_CONNECT_TIMEOUT_MS);
   }
 
   return {
     async record(jti: string, ttlSeconds: number): Promise<boolean> {
-      await ensureConnected();
-      const result = await client.set(`jti:${jti}`, "1", {
-        condition: "NX",
-        expiration: { type: "EX", value: Math.max(1, Math.ceil(ttlSeconds)) },
-      });
+      const result = await withTimeout(
+        (async () => {
+          await ensureConnected();
+          return client.set(`jti:${jti}`, "1", {
+            condition: "NX",
+            expiration: {
+              type: "EX",
+              value: Math.max(1, Math.ceil(ttlSeconds)),
+            },
+          });
+        })(),
+        REDIS_RECORD_TIMEOUT_MS,
+      );
       return result === "OK";
     },
   };
@@ -66,7 +112,7 @@ export interface AppConfig {
   verifyPath: string;
   jwtSecret: string;
   argon2Secret: string;
-  redisUrl: string;
+  redis: RedisConnectionConfig;
 }
 
 function requireEnv(env: EnvSource, name: string): string {
@@ -96,23 +142,7 @@ function requireHttpsUrl(env: EnvSource, name: string): string {
       throw new Error();
     }
   } catch {
-    throw new Error(`${name} must be a valid HTTPS URL (got "${value}")`);
-  }
-  return value;
-}
-
-function requireRedisUrl(env: EnvSource, name: string): string {
-  const value = requireEnv(env, name);
-  let protocol: string;
-  try {
-    protocol = new URL(value).protocol;
-  } catch {
-    throw new Error(`${name} must be a valid URL (got "${value}")`);
-  }
-  if (protocol !== "redis:" && protocol !== "rediss:") {
-    throw new Error(
-      `${name} must use the redis:// (or rediss://) scheme (got "${value}")`,
-    );
+    throw new Error(`${name} must be a valid HTTPS URL`);
   }
   return value;
 }
@@ -136,13 +166,24 @@ export function loadConfig(env: EnvSource): AppConfig {
     );
   }
 
+  const redisHost = requireEnv(env, "REDIS_HOST");
+  const redisPortRaw = requireEnv(env, "REDIS_PORT");
+  const redisPort = Number(redisPortRaw);
+  if (!Number.isInteger(redisPort) || redisPort < 1 || redisPort > 65535) {
+    throw new Error("REDIS_PORT must be an integer between 1 and 65535");
+  }
+
   return {
     jwtIssuer,
     jwtAudience,
     verifyPath,
     jwtSecret: requireStrongEnv(env, "JWT_SECRET"),
     argon2Secret: requireStrongEnv(env, "ARGON2_SECRET"),
-    redisUrl: requireRedisUrl(env, "REDIS_URL"),
+    redis: {
+      host: redisHost,
+      port: redisPort,
+      password: requireEnv(env, "REDIS_PASSWORD"),
+    },
   };
 }
 
@@ -168,7 +209,7 @@ const ARGON2_SECRET = config.argon2Secret;
 const JWT_MAX_LIFETIME = 120;
 const JWT_CLOCK_SKEW_TOLERANCE = 30;
 
-export const replayStore: ReplayStore = createRedisStore(config.redisUrl);
+export const replayStore: ReplayStore = createRedisStore(config.redis);
 
 console.info(
   JSON.stringify({
@@ -353,11 +394,14 @@ const requireFreshJti: MiddlewareHandler = async (c, next) => {
     console.error(
       JSON.stringify({
         event: "replay_store_unavailable",
-        action: "fail_open",
+        action: "fail_closed",
       }),
     );
-    await next();
-    return;
+    auditVerify(c, false, "STORE_UNAVAILABLE");
+    return c.json(
+      { success: false, errcode: "SERVICE_UNAVAILABLE" },
+      503,
+    ) as Response;
   }
 
   if (!firstSighting) {
@@ -426,7 +470,6 @@ app.post(
   requireJwt,
   requireExpClaim,
   requireSubject,
-  requireFreshJti,
   (c, next) => {
     c.header("Cache-Control", "no-store");
     return next();
@@ -435,6 +478,7 @@ app.post(
   timeout(10_000),
   validateContentLength,
   bodyLimit({ maxSize: MAX_BODY_BYTES }),
+  requireFreshJti,
   validator("json", (value, c) => {
     if (
       typeof value !== "object" ||
