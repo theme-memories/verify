@@ -43,15 +43,10 @@ vi.mock("redis", () => ({
   },
 }));
 
-import app, {
-  ARGON2_PHC_PREFIX,
-  argon2Limiter,
-  EXPECTED_ARGON2,
-  JWT_AUDIENCE,
-  JWT_ISSUER,
-  loadConfig,
-  Semaphore,
-} from "./index.js";
+import app from "../index.js";
+import { ARGON2_PHC_PREFIX } from "../argon2.js";
+import { argon2Limiter, EXPECTED_ARGON2 } from "../concurrency.js";
+import { jwtIssuer, jwtAudience } from "../config.js";
 
 const TEST_PEPPER = "test-pepper-secret-1234567890123456";
 const TEST_JWT_SECRET = "test-jwt-secret-1234567890123456";
@@ -92,8 +87,8 @@ describe("POST /test-path", () => {
         jti: crypto.randomUUID(),
         iat: now,
         exp: now + 60,
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
         ...payload,
       },
       process.env.JWT_SECRET!,
@@ -432,8 +427,8 @@ describe("POST /test-path", () => {
       {
         sub: "test-worker",
         iat: Math.floor(Date.now() / 1000),
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       "HS256",
@@ -449,8 +444,8 @@ describe("POST /test-path", () => {
       {
         iat: now,
         exp: now + 60,
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       "HS256",
@@ -548,8 +543,8 @@ describe("POST /test-path", () => {
         sub: "test-worker",
         iat: "not-a-number" as unknown as number,
         exp: Math.floor(Date.now() / 1000) + 60,
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       "HS256",
@@ -627,8 +622,8 @@ describe("POST /test-path", () => {
       {
         sub: "test-worker",
         exp: Math.floor(Date.now() / 1000) + 60,
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       "HS256",
@@ -657,8 +652,8 @@ describe("POST /test-path", () => {
         sub: "test-worker",
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 60,
-        iss: `${JWT_ISSUER}/`,
-        aud: JWT_AUDIENCE,
+        iss: `${jwtIssuer}/`,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       "HS256",
@@ -675,7 +670,7 @@ describe("POST /test-path", () => {
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 60,
         iss: "http://test.example",
-        aud: JWT_AUDIENCE,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       "HS256",
@@ -691,7 +686,7 @@ describe("POST /test-path", () => {
         sub: "test-worker",
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 60,
-        iss: JWT_ISSUER,
+        iss: jwtIssuer,
         aud: "https://wrong-audience.example",
       },
       process.env.JWT_SECRET!,
@@ -738,8 +733,8 @@ describe("JWT algorithm restrictions", () => {
         sub: "test-worker",
         iat: now,
         exp: now + 60,
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
       },
       process.env.JWT_SECRET!,
       alg,
@@ -766,8 +761,8 @@ describe("JWT algorithm restrictions", () => {
         sub: "test-worker",
         iat: now,
         exp: now + 60,
-        iss: JWT_ISSUER,
-        aud: JWT_AUDIENCE,
+        iss: jwtIssuer,
+        aud: jwtAudience,
       }),
     ).toString("base64url");
     const token = `${header}.${payload}.`;
@@ -776,39 +771,30 @@ describe("JWT algorithm restrictions", () => {
   });
 });
 
-describe("Semaphore", () => {
-  it("tryAcquire returns true when permits are available", () => {
-    const sem = new Semaphore(2, 10);
-    expect(sem.tryAcquire()).toBe(true);
-    expect(sem.tryAcquire()).toBe(true);
+describe("app-owned security headers", () => {
+  it("sets X-Frame-Options DENY", async () => {
+    const res = await app.request("/nonexistent");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
   });
 
-  it("tryAcquire returns false when permits are exhausted", () => {
-    const sem = new Semaphore(2, 10);
-    expect(sem.tryAcquire()).toBe(true);
-    expect(sem.tryAcquire()).toBe(true);
-    expect(sem.tryAcquire()).toBe(false);
-    expect(sem.waiting).toBe(0);
+  it("sets a deny-all CSP", async () => {
+    const res = await app.request("/nonexistent");
+    expect(res.headers.get("Content-Security-Policy")).toBe(
+      "default-src 'none'; frame-ancestors 'none'",
+    );
   });
 
-  it("tryAcquire returns false when queue is full", () => {
-    const sem = new Semaphore(0, 2);
-    sem.acquire();
-    sem.acquire();
-    expect(sem.tryAcquire()).toBe(false);
+  it("sets the Permissions-Policy deny list", async () => {
+    const res = await app.request("/nonexistent");
+    expect(res.headers.get("Permissions-Policy")).toBe(
+      "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+    );
   });
 
-  it("release frees a waiting acquirer", async () => {
-    const sem = new Semaphore(1, 10);
-    sem.acquire();
-    let resolved = false;
-    const p = sem.acquire().then(() => {
-      resolved = true;
-    });
-    expect(resolved).toBe(false);
-    sem.release();
-    await p;
-    expect(resolved).toBe(true);
+  it("keeps no-referrer and nosniff defaults", async () => {
+    const res = await app.request("/nonexistent");
+    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
   });
 });
 
@@ -848,8 +834,8 @@ async function makeToken(overrides: Record<string, unknown> = {}) {
       jti: crypto.randomUUID(),
       iat: now,
       exp: now + 60,
-      iss: JWT_ISSUER,
-      aud: JWT_AUDIENCE,
+      iss: jwtIssuer,
+      aud: jwtAudience,
       ...overrides,
     },
     process.env.JWT_SECRET!,
@@ -920,111 +906,6 @@ const realTick = () =>
   new Promise<void>((resolve) => {
     realSetTimeout(resolve, 0);
   });
-
-describe("loadConfig", () => {
-  it("parses a valid environment", () => {
-    expect(loadConfig(TEST_ENV)).toEqual({
-      jwtIssuer: TEST_ENV.JWT_ISSUER,
-      jwtAudience: TEST_ENV.JWT_AUDIENCE,
-      verifyPath: "/test-path",
-      jwtSecret: TEST_JWT_SECRET,
-      argon2Secret: TEST_PEPPER,
-      redis: {
-        host: "localhost",
-        port: 6379,
-        password: "test-password",
-      },
-    });
-  });
-
-  it.each(Object.keys(TEST_ENV))("rejects when %s is missing", (key) => {
-    const env = { ...TEST_ENV };
-    delete env[key];
-    expect(() => loadConfig(env)).toThrow(key);
-  });
-
-  it("rejects blank values", () => {
-    expect(() => loadConfig({ ...TEST_ENV, JWT_SECRET: "   " })).toThrow(
-      "JWT_SECRET",
-    );
-  });
-
-  it("rejects secrets shorter than 32 bytes", () => {
-    expect(() =>
-      loadConfig({ ...TEST_ENV, ARGON2_SECRET: "too-short" }),
-    ).toThrow(/at least 32/);
-  });
-
-  it.each(["JWT_ISSUER", "JWT_AUDIENCE"])("rejects non-HTTPS %s", (key) => {
-    expect(() =>
-      loadConfig({ ...TEST_ENV, [key]: "http://test.example" }),
-    ).toThrow(key);
-  });
-
-  it.each(["JWT_ISSUER", "JWT_AUDIENCE"])("rejects malformed %s", (key) => {
-    expect(() =>
-      loadConfig({ ...TEST_ENV, [key]: "not a url at all" }),
-    ).toThrow(key);
-  });
-
-  it("rejects VERIFY_PATH without a leading slash", () => {
-    expect(() => loadConfig({ ...TEST_ENV, VERIFY_PATH: "test-path" })).toThrow(
-      "/",
-    );
-  });
-
-  it("rejects VERIFY_PATH ending with a slash", () => {
-    expect(() =>
-      loadConfig({ ...TEST_ENV, VERIFY_PATH: "/test-path/" }),
-    ).toThrow('must not end with "/"');
-  });
-
-  it("rejects VERIFY_PATH longer than 256 characters", () => {
-    expect(() =>
-      loadConfig({ ...TEST_ENV, VERIFY_PATH: `/${"a".repeat(300)}` }),
-    ).toThrow();
-  });
-
-  it("rejects VERIFY_PATH with characters outside the allowlist", () => {
-    expect(() => loadConfig({ ...TEST_ENV, VERIFY_PATH: "/te st" })).toThrow();
-  });
-
-  it.each(["abc", "0", "-1", "65536", "6379.5"])(
-    "rejects an invalid REDIS_PORT (%s)",
-    (port) => {
-      expect(() => loadConfig({ ...TEST_ENV, REDIS_PORT: port })).toThrow(
-        "REDIS_PORT",
-      );
-    },
-  );
-});
-
-describe("app-owned security headers", () => {
-  it("sets X-Frame-Options DENY", async () => {
-    const res = await app.request("/nonexistent");
-    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
-  });
-
-  it("sets a deny-all CSP", async () => {
-    const res = await app.request("/nonexistent");
-    expect(res.headers.get("Content-Security-Policy")).toBe(
-      "default-src 'none'; frame-ancestors 'none'",
-    );
-  });
-
-  it("sets the Permissions-Policy deny list", async () => {
-    const res = await app.request("/nonexistent");
-    expect(res.headers.get("Permissions-Policy")).toBe(
-      "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
-    );
-  });
-
-  it("keeps no-referrer and nosniff defaults", async () => {
-    const res = await app.request("/nonexistent");
-    expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
-    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
-  });
-});
 
 describe("request edge cases", () => {
   beforeEach(applyTestEnv);
