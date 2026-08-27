@@ -1,3 +1,12 @@
+/**
+ * Replay protection store backed by Redis.
+ *
+ * The store records a JWT `jti` with an EX/NX set so the same token can only
+ * be used once. Every failure mode (connection error, timeout, record timeout)
+ * is *fail-closed*: the caller (`requireFreshJti`) turns an error into a 503
+ * rather than letting a request through without replay checks.
+ */
+
 import { createClient } from "redis";
 import {
   REDIS_CONNECT_TIMEOUT_MS,
@@ -10,6 +19,7 @@ export interface ReplayStore {
   record(jti: string, ttlSeconds: number): Promise<boolean>;
 }
 
+// Rejects the wrapped promise if the underlying one does not settle in `ms`.
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
@@ -36,6 +46,7 @@ export function createRedisStore(config: RedisConnectionConfig): ReplayStore {
       port: config.port,
       tls: false,
       connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
+      // Bounded exponential backoff; give up after REDIS_MAX_RECONNECT_ATTEMPTS.
       reconnectStrategy: (retries) => {
         if (retries >= REDIS_MAX_RECONNECT_ATTEMPTS) return false;
         return Math.min(100 * 2 ** retries, 1_000);
@@ -53,6 +64,8 @@ export function createRedisStore(config: RedisConnectionConfig): ReplayStore {
     );
   });
 
+  // Lazily connect on first use; `connectionPromise` de-duplicates concurrent
+  // callers so we never open more than one connection.
   let connectionPromise: Promise<void> | null = null;
   async function ensureConnected(): Promise<void> {
     if (client.isOpen) return;
@@ -81,8 +94,10 @@ export function createRedisStore(config: RedisConnectionConfig): ReplayStore {
           })(),
           REDIS_RECORD_TIMEOUT_MS,
         );
+        // "OK" => first sighting; null => jti already recorded (replay).
         return setResult === "OK";
       } catch (error) {
+        // Destroy the (possibly wedged) socket so the next call reconnects.
         client.destroy();
         connectionPromise = null;
         throw error;

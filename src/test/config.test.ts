@@ -1,3 +1,9 @@
+/**
+ * Unit tests for loadConfig: a valid environment parses as expected, and every
+ * missing / malformed / under-strength value is rejected with the offending
+ * variable name in the thrown error (so the caller can surface which key failed).
+ */
+
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../config.js";
 

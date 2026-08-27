@@ -1,3 +1,9 @@
+/**
+ * Maps an HTTPException status to the stable `errcode` string returned in the
+ * JSON body. Used by the app's onError handler so responses stay consistent
+ * with the codes used by the explicit guard middlewares.
+ */
+
 export function errorCodeForStatus(status: number): string {
   switch (status) {
     case 400:

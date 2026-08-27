@@ -1,3 +1,11 @@
+/**
+ * Unit tests for the PHC string helpers.
+ *
+ * `isValidArgon2Phc` is *structural only*: it accepts any well-formed argon2id
+ * hash (including non-default cost/version) and rejects only malformed ones.
+ * Cost/version enforcement happens later via argon2.needsRehash().
+ */
+
 import { describe, expect, it } from "vitest";
 import { ARGON2_PHC_PREFIX, isValidArgon2Phc } from "../argon2.js";
 import { EXPECTED_ARGON2 } from "../concurrency.js";

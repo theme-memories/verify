@@ -1,3 +1,15 @@
+/**
+ * Configuration loading and validated singletons.
+ *
+ * All values are read once, at import time, from `process.env` (populated by
+ * Vercel's Environment Variables). On any missing/invalid value the process
+ * refuses to boot (`loadConfig` throws and the module re-throws) so a
+ * misconfigured deployment never silently serves traffic.
+ *
+ * NOTE: the variable *names* (ARGON2_SECRET, JWT_SECRET, JWT_ISSUER, ...) are
+ * the Vercel secret names and must not be renamed.
+ */
+
 import {
   SECRET_MIN_LENGTH,
   VERIFY_PATH_PATTERN,
@@ -21,6 +33,7 @@ export interface AppConfig {
   redis: RedisConnectionConfig;
 }
 
+// Reads a non-empty variable, trimming surrounding whitespace.
 function requireEnv(env: EnvSource, name: string): string {
   const raw = env[name];
   if (!raw) {
@@ -33,6 +46,7 @@ function requireEnv(env: EnvSource, name: string): string {
   return value;
 }
 
+// Like requireEnv but also enforces the cryptographic minimum length.
 function requireStrongEnv(env: EnvSource, name: string): string {
   const value = requireEnv(env, name);
   if (Buffer.byteLength(value, "utf8") < SECRET_MIN_LENGTH) {
@@ -41,6 +55,8 @@ function requireStrongEnv(env: EnvSource, name: string): string {
   return value;
 }
 
+// JWT issuer/audience must be real HTTPS URLs so tokens can't be issued by an
+// http:// (downgradable) origin.
 function requireHttpsUrl(env: EnvSource, name: string): string {
   const value = requireEnv(env, name);
   try {
@@ -93,6 +109,7 @@ export function loadConfig(env: EnvSource): AppConfig {
   };
 }
 
+// Fail fast at boot if the environment is incomplete.
 let config: AppConfig;
 try {
   config = loadConfig(process.env);
@@ -106,6 +123,7 @@ try {
   throw error;
 }
 
+// Resolved, app-wide singletons derived from the validated config.
 export const redisConfig = config.redis;
 export const jwtIssuer = config.jwtIssuer;
 export const jwtAudience = config.jwtAudience;

@@ -1,3 +1,7 @@
+/**
+ * Unit tests for the Semaphore used to bound concurrent argon2 verifications.
+ */
+
 import { describe, expect, it } from "vitest";
 import { Semaphore } from "../concurrency.js";
 

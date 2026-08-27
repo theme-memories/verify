@@ -1,5 +1,10 @@
 import { defineConfig } from "vitest/config";
 
+// Test environment. These values mirror a valid production environment so the
+// config singleton in src/config.ts can load at import time. `argon2` runs
+// against its real native bindings in tests; only the `redis` client is mocked
+// (see src/test/app.test.ts) so replay protection can be exercised without a
+// live Redis.
 export default defineConfig({
   test: {
     env: {

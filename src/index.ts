@@ -1,3 +1,13 @@
+/**
+ * Hono application wiring.
+ *
+ * This file is intentionally thin: it composes the guards from ./middleware
+ * and the route handler that performs the actual argon2 verification. All
+ * business logic (config, redis, concurrency, hashing, per-request guards)
+ * lives in the sibling modules so each piece can be read and tested in
+ * isolation.
+ */
+
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { bodyLimit } from "hono/body-limit";
@@ -32,10 +42,12 @@ import {
 } from "./middleware.js";
 import { errorCodeForStatus } from "./errors.js";
 
+// Single replay store instance for the whole function.
 const replayStore = createRedisStore(redisConfig);
 
 const app = new Hono();
 
+// Defence-in-depth security headers on every response.
 app.use(
   "*",
   secureHeaders({
@@ -57,6 +69,12 @@ app.use(
   }),
 );
 
+// The only real endpoint. Middleware order matters:
+//   1. authenticate (JWT)                 -> requireJwt
+//   2. authorize (exp/iat/subject)        -> requireExpClaim, requireSubject
+//   3. stamp no-store + enforce JSON      -> setNoStore, requireJsonContentType
+//   4. bound runtime (timeout, size)      -> timeout, validateContentLength, bodyLimit
+//   5. validate + replay-check the body   -> validator, requireFreshJti
 app.post(
   verifyPath,
   requireJwt,
@@ -103,6 +121,7 @@ app.post(
       target: string;
     };
 
+    // Reject hashes whose cost parameters differ from EXPECTED_ARGON2.
     let needsRehash: boolean;
     try {
       needsRehash = argon2.needsRehash(target, EXPECTED_ARGON2);
@@ -120,6 +139,7 @@ app.post(
       return c.json({ success: false, errcode: "REQUEST_CANCELLED" }, 408);
     }
 
+    // Acquire a concurrency slot; shed load with 429 when exhausted.
     let success: boolean;
     try {
       await argon2Limiter.acquire();
@@ -129,6 +149,8 @@ app.post(
       });
     }
 
+    // Guarantee the semaphore slot is released even if the native call hangs
+    // (the watchdog) or the request is aborted mid-verify.
     let released = false;
     const releaseOnce = (): void => {
       if (released) {
@@ -146,6 +168,8 @@ app.post(
       });
       void verifyPromise.then(releaseOnce, releaseOnce);
 
+      // Race the verification against request cancellation so we never keep a
+      // slot busy for an already-dead client.
       let onAbort: (() => void) | undefined;
       const abortPromise = new Promise<"aborted">((resolve) => {
         onAbort = () => resolve("aborted");
@@ -182,6 +206,8 @@ app.post(
   },
 );
 
+// Everything else (wrong method, unknown path, unhandled error) gets a polite
+// JSON envelope with no-store.
 app.use(
   methodNotAllowed({
     app,

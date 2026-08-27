@@ -1,3 +1,10 @@
+/**
+ * Hono middleware pipeline. Each export is a small, single-purpose guard that
+ * runs (in order) before the verify handler in index.ts. The replay check
+ * (`requireFreshJti`) is a factory: it takes the ReplayStore so the store can
+ * be created once at startup and injected here.
+ */
+
 import { type Context, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { jwt } from "hono/jwt";
@@ -10,19 +17,26 @@ import {
 } from "./constants.js";
 import type { ReplayStore } from "./redis.js";
 
+// 400 with a stable machine-readable error code.
 export function invalidInput(c: Context): Response {
   return c.json({ success: false, errcode: "INVALID_INPUT" }, 400) as Response;
 }
 
+// Password-verify failures deliberately return 200 so callers cannot
+// distinguish "wrong password" from "bad hash" (avoid oracle side channels).
 export function verifyFailed(c: Context) {
   return c.json({ success: false, errcode: "VERIFY_FAILED" }, 200);
 }
 
+// Stamp every response on this route as non-cacheable.
 export const setNoStore: MiddlewareHandler = async (c, next) => {
   c.header("Cache-Control", "no-store");
   await next();
 };
 
+// Validates the Bearer JWT signature + issuer + audience, and enforces HS256
+// only (the hono/jwt middleware honours the `alg` we pass). Oversized
+// Authorization headers are rejected before parsing to avoid abuse.
 export const requireJwt: MiddlewareHandler = async (c, next) => {
   const authorization = c.req.header("Authorization");
   if (authorization && authorization.length > MAX_AUTHORIZATION_LENGTH) {
@@ -44,6 +58,8 @@ export const requireJwt: MiddlewareHandler = async (c, next) => {
   })(c, next);
 };
 
+// Enforces token lifetime bounds: not expired, has `iat`, not issued in the
+// future beyond skew, exp > iat, and total lifetime <= JWT_MAX_LIFETIME.
 export const requireExpClaim: MiddlewareHandler = async (c, next) => {
   const payload = c.get("jwtPayload") as
     { exp?: number; iat?: number } | undefined;
@@ -77,6 +93,7 @@ export const requireExpClaim: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+// `sub` identifies the calling worker; keep it to a tight, safe character set.
 export const requireSubject: MiddlewareHandler = async (c, next) => {
   const payload = c.get("jwtPayload") as { sub?: unknown } | undefined;
   if (
@@ -88,8 +105,11 @@ export const requireSubject: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+// Only accepts 8-64 char, base64-ish jti values (sha-style UUIDs qualify).
 const JTI_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
+// Replay protection: records the jti in Redis (NX). First sighting proceeds;
+// a repeat hits REPLAY_DETECTED; any store error fails closed with 503.
 export function requireFreshJti(replayStore: ReplayStore): MiddlewareHandler {
   return async (c, next) => {
     const payload = c.get("jwtPayload") as
@@ -107,6 +127,8 @@ export function requireFreshJti(replayStore: ReplayStore): MiddlewareHandler {
       return c.json({ success: false, errcode: "UNAUTHORIZED" }, 401);
     }
 
+    // Keep the Redis key alive for the remainder of the token's validity
+    // (plus skew), so replays are blocked until the token would expire anyway.
     const ttlSeconds = Math.min(
       exp + JWT_CLOCK_SKEW_TOLERANCE - now,
       JWT_MAX_LIFETIME + JWT_CLOCK_SKEW_TOLERANCE,
@@ -138,6 +160,7 @@ export function requireFreshJti(replayStore: ReplayStore): MiddlewareHandler {
   };
 }
 
+// Structured audit line emitted for every verify outcome.
 export function auditVerify(
   c: Context,
   success: boolean,
@@ -148,6 +171,7 @@ export function auditVerify(
   console.info(JSON.stringify({ event: "verify", sub, success, errcode }));
 }
 
+// Reject anything that isn't exactly application/json (ignoring parameters).
 export const requireJsonContentType: MiddlewareHandler = async (c, next) => {
   const contentType = (c.req.header("Content-Type") ?? "")
     .split(";", 1)[0]
@@ -157,6 +181,8 @@ export const requireJsonContentType: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+// Pre-flight the declared Content-Length so we reject oversized payloads
+// before streaming the body in.
 export const validateContentLength: MiddlewareHandler = async (c, next) => {
   const rawLength = c.req.header("Content-Length");
   if (rawLength !== undefined) {

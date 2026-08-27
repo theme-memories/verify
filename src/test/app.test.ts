@@ -1,3 +1,21 @@
+/**
+ * End-to-end tests for the verify endpoint.
+ *
+ * Coverage mirrors index.ts: request validation, JWT claim rules, algorithm
+ * restrictions, security headers, edge cases (abort / oversized body),
+ * semaphore backpressure and replay protection.
+ *
+ * The `redis` client is mocked for the whole file so the replay store can be
+ * asserted without a real Redis. `argon2` itself is NOT mocked in most suites,
+ * so these also exercise the real native verification (and its cost policy via
+ * needsRehash). A few backpressure tests deliberately stub `argon2.verify` to
+ * control scheduling.
+ *
+ * Two environment fixtures are in play:
+ *   - vitest.config.ts `env` (project-wide secrets used at module import)
+ *   - per-test `process.env` set/cleared in before/afterEach for token signing
+ */
+
 import {
   describe,
   expect,
@@ -62,6 +80,8 @@ async function createHash(password: string, pepper = TEST_PEPPER) {
   });
 }
 
+// Core flow: a valid JWT + well-formed request verifies successfully, while
+// bad passwords / wrong pepper / malformed hashes are rejected.
 describe("POST /test-path", () => {
   beforeEach(() => {
     process.env.ARGON2_SECRET = TEST_PEPPER;
@@ -697,6 +717,7 @@ describe("POST /test-path", () => {
   });
 });
 
+// Only HS256 is accepted; HS384/HS512 and alg=none are rejected by requireJwt.
 describe("JWT algorithm restrictions", () => {
   beforeEach(() => {
     process.env.ARGON2_SECRET = TEST_PEPPER;
@@ -771,6 +792,7 @@ describe("JWT algorithm restrictions", () => {
   });
 });
 
+// secureHeaders output is asserted directly against a 404 response.
 describe("app-owned security headers", () => {
   it("sets X-Frame-Options DENY", async () => {
     const res = await app.request("/nonexistent");
@@ -798,6 +820,9 @@ describe("app-owned security headers", () => {
   });
 });
 
+// Shared fixtures for the suites below: a complete, valid environment used by
+// applyTestEnv/clearTestEnv, plus the postJson/makeToken helpers that build
+// authenticated requests. After each test the Redis `set` mock resets to "OK".
 const TEST_ENV: Record<string, string> = {
   ARGON2_SECRET: TEST_PEPPER,
   JWT_SECRET: TEST_JWT_SECRET,
@@ -874,6 +899,8 @@ async function postWithToken(token: string, body: unknown) {
   });
 }
 
+// Stub argon2.verify to never resolve, returning the per-call resolvers so a
+// test can release verifications deterministically (used for backpressure).
 function hangVerify(): Array<(value: boolean) => void> {
   const resolvers: Array<(value: boolean) => void> = [];
   vi.spyOn(argon2, "verify").mockImplementation(
@@ -907,6 +934,8 @@ const realTick = () =>
     realSetTimeout(resolve, 0);
   });
 
+// Body/header edge cases that must not reach argon2 (oversized, non-JSON,
+// already-aborted requests, etc.). These use the shared applyTestEnv fixture.
 describe("request edge cases", () => {
   beforeEach(applyTestEnv);
   afterEach(clearTestEnv);
@@ -1009,6 +1038,8 @@ describe("request edge cases", () => {
   });
 });
 
+// Exercises the Semaphore: permit release on abort, 429 shedding under load,
+// 500 on verify failure and 504 when verification exceeds the timeout.
 describe("cancellation and semaphore backpressure", () => {
   beforeEach(applyTestEnv);
   afterEach(clearTestEnv);
@@ -1127,6 +1158,7 @@ describe("cancellation and semaphore backpressure", () => {
   }, 20_000);
 });
 
+// Boundary checks for iat/exp lifetime and subject length / character rules.
 describe("claim boundaries", () => {
   beforeEach(applyTestEnv);
   afterEach(clearTestEnv);
@@ -1199,6 +1231,7 @@ describe("claim boundaries", () => {
   });
 });
 
+// Verifies the structured `verify` audit line is emitted with the right shape.
 describe("audit logging", () => {
   beforeEach(applyTestEnv);
   afterEach(clearTestEnv);
@@ -1260,6 +1293,8 @@ describe("audit logging", () => {
   });
 });
 
+// Replay protection end-to-end against the mocked Redis store: first-use
+// recording, REPLAY_DETECTED, jti shape rules and fail-closed 503 behaviour.
 describe("replay protection (Redis required)", () => {
   beforeEach(applyTestEnv);
   afterEach(clearTestEnv);
