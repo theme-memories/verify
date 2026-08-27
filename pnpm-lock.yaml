@@ -12,8 +12,8 @@ importers:
         specifier: ^0.45.1
         version: 0.45.1
       hono:
-        specifier: ^4.13.4
-        version: 4.13.4
+        specifier: ^4.13.5
+        version: 4.13.5
       redis:
         specifier: ^6.2.1
         version: 6.2.1
@@ -711,8 +711,8 @@ packages:
     resolution: {integrity: sha512-Z2I8hM+PbJDXQDq3Icgpzv+mPdwr68iZUU9d5WW4FuXfDUQfkZaZuvjMv42/5crNyw154+9+VWXbYrUgDXbxNw==}
     engines: {node: '>=18'}
 
-  hono@4.13.4:
-    resolution: {integrity: sha512-AGEwKIyRMHRv1t8Wjwa3LHxQ61X5CqrdFT+4BRNTpqS5aJNnpl5WLjADb7vFlJzI/8uK7T5QLVApCMQKNa3LgQ==}
+  hono@4.13.5:
+    resolution: {integrity: sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw==}
     engines: {node: '>=16.9.0'}
 
   husky@9.1.7:
@@ -1669,7 +1669,7 @@ snapshots:
 
   globals@17.11.0: {}
 
-  hono@4.13.4: {}
+  hono@4.13.5: {}
 
   husky@9.1.7: {}
 
