@@ -1,6 +1,6 @@
 {
   "name": "verify",
-  "version": "26.8.27",
+  "version": "26.8.29",
   "description": "Argon2 verification module",
   "scripts": {
     "test": "vitest run",
@@ -23,7 +23,7 @@
     "globals": "^17.11.0",
     "husky": "^9.1.7",
     "jiti": "^2.7.0",
-    "lint-staged": "^17.3.0",
+    "lint-staged": "^17.4.1",
     "prettier": "^3.9.6",
     "tsx": "^4.23.12",
     "typescript": "^6.0.3",
