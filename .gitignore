@@ -141,3 +141,23 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# hono's default gitignore
+
+## dev
+.vscode/*
+!.vscode/launch.json
+!.vscode/*.code-snippets
+.idea/workspace.xml
+.idea/usage.statistics.xml
+.idea/shelf
+
+## logs
+pnpm-debug.log*
+
+## misc
+.DS_Store
+.vercel
+
+# custom
+.commandcode
